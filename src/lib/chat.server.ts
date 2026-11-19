@@ -1,18 +1,12 @@
-import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import { authenticate, json, type UserClient } from "./auth-request.server";
 import { buildSystemPrompt } from "./instructions";
 import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
-import {
-  createLovableAiGatewayRunIdFetch,
-  getLovableAiGatewayRunId,
-  withLovableAiGatewayRunIdHeader,
-} from "./run-id.server";
 
-const MODEL = "openai/gpt-6-astra";
-const GATEWAY = "https://ai.gateway.lovable.dev/v1";
+const MODEL = "gemini-2.5-flash";
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -53,16 +47,10 @@ export async function handleChat(request: Request) {
     }
   }
 
-  const apiKey = process.env['LOVABLE_API_KEY'];
+  const apiKey = process.env["GOOGLE_GENERATIVE_AI_API_KEY"] ?? process.env["GEMINI_API_KEY"];
   if (!apiKey) return json(500, "Falta configurar la IA.");
 
-  const runIdFetch = createLovableAiGatewayRunIdFetch(getLovableAiGatewayRunId(request));
-  const provider = createOpenAI({
-    baseURL: GATEWAY,
-    apiKey,
-    headers: { "Lovable-API-Key": apiKey, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
-    fetch: runIdFetch.fetch,
-  });
+  const provider = createGoogleGenerativeAI({ apiKey });
 
   let modelMessages: UIMessage[];
   try {
@@ -81,18 +69,11 @@ export async function handleChat(request: Request) {
   });
 
   const result = streamText({
-    model: provider.responses(MODEL),
+    model: provider(MODEL),
     instructions: `${system}\n\nHoy es ${today}.`,
     messages: await convertToModelMessages(modelMessages),
-    tools: { web_search: provider.tools.webSearch({}) },
+    tools: { google_search: provider.tools.googleSearch({}) },
     abortSignal: request.signal,
-    providerOptions: {
-      openai: {
-        forceReasoning: true,
-        reasoningEffort: "low",
-        store: false,
-      },
-    },
   });
 
   const response = result.toUIMessageStreamResponse({
@@ -105,7 +86,7 @@ export async function handleChat(request: Request) {
       console.error("chat stream error", error);
       const status = (error as { statusCode?: number })?.statusCode;
       if (status === 429) return "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.";
-      if (status === 402) return "Se agotaron los créditos de IA de este espacio de trabajo.";
+      if (status === 402) return "Se agotaron los créditos de IA.";
       return "Capri no pudo responder. Inténtalo de nuevo.";
     },
     onFinish: async ({ responseMessage }) => {
@@ -142,7 +123,7 @@ export async function handleChat(request: Request) {
     },
   });
 
-  return withLovableAiGatewayRunIdHeader(response, runIdFetch);
+  return response;
 }
 
 
@@ -150,17 +131,16 @@ export async function handleChat(request: Request) {
 type ExtractedMemory = { category: "preferencia" | "proyecto" | "objetivo" | "contexto" | "otro"; content: string; importance: number; expiresInDays: number | null };
 
 async function extractAndSaveMemories(
-  provider: ReturnType<typeof createOpenAI>,
+  provider: ReturnType<typeof createGoogleGenerativeAI>,
   supabase: UserClient,
   userId: string,
   userText: string,
 ) {
   const result = await streamText({
-    model: provider.responses(MODEL),
+    model: provider(MODEL),
     instructions: `Extrae de lo que el usuario acaba de decir entre cero y tres recuerdos útiles para futuras conversaciones. Devuelve exclusivamente un JSON válido con la forma {"memories":[{"category":"preferencia|proyecto|objetivo|contexto|otro","content":"...","importance":1,"expiresInDays":null}]}. Guarda solo información explícita, estable y útil: preferencias de respuesta, proyectos, objetivos y contexto de trabajo. No guardes datos sensibles (salud, religión, política, sexualidad, datos financieros privados), secretos, contraseñas, datos de terceros, información pasajera ni suposiciones. No conviertas preguntas o hipótesis en hechos. Cada recuerdo debe ser una frase breve, en primera persona cuando corresponda, máximo 300 caracteres. importance va de 1 a 5. expiresInDays es null para recuerdos duraderos o un número de 7 a 365 para datos temporales. Si no hay nada claro, devuelve {"memories":[]}.`,
     prompt: `Mensaje del usuario:\n${userText.slice(0, 3000)}`,
     maxOutputTokens: 500,
-    providerOptions: { openai: { forceReasoning: true, reasoningEffort: "low", store: false } },
   });
   const raw = (await result.text).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const parsed = JSON.parse(raw) as { memories?: ExtractedMemory[] };
@@ -278,18 +258,17 @@ const textOf = (m: UIMessage) =>
   m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim().slice(0, 1500);
 
 async function generateTitle(
-  provider: ReturnType<typeof createOpenAI>,
+  provider: ReturnType<typeof createGoogleGenerativeAI>,
   messages: UIMessage[],
   reply: UIMessage,
 ) {
   const user = messages.filter((m) => m.role === "user").map(textOf).join("\n");
   const result = streamText({
-    model: provider.responses(MODEL),
+    model: provider(MODEL),
     instructions:
       "Genera un título corto (3 a 6 palabras) en el idioma de la conversación que resuma el tema. Responde solo con el título, sin comillas ni punto final.",
     prompt: `Usuario: ${user}\n\nAsistente: ${textOf(reply)}`,
     maxOutputTokens: 32,
-    providerOptions: { openai: { forceReasoning: true, reasoningEffort: "low", store: false } },
   });
   const text = (await result.text).trim().replace(/^["'«]+|["'».]+$/g, "");
   return text.slice(0, 80);
