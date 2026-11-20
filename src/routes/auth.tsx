@@ -1,9 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import "@lovable.dev/cloud-auth-js/styles.css";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
 import { oauthReturnPath } from "@/lib/oauth-return-path";
 import { CapriMark } from "@/components/capri-mark";
 import { Button } from "@/components/ui/button";
@@ -64,11 +62,19 @@ function AuthPage() {
     setBusy(false);
   }
 
-  async function oauth(provider: "google" | "lovable") {
-    const result = await lovable.auth.signInWithOAuth(provider, { redirect_uri: next
-        ? new URL("/auth?next=" + encodeURIComponent(target), window.location.origin).href
-        : window.location.origin + "/auth" });
-    if (result.error) toast.error("No se pudo iniciar sesión.");
+  // Google login uses Supabase Auth directly. The previous Lovable OAuth
+  // broker (/~oauth/initiate) only exists on Lovable's hosting, so it 404s
+  // on Vercel. Requires the Google provider enabled in Supabase Auth.
+  async function oauthGoogle() {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: next
+          ? new URL("/auth?next=" + encodeURIComponent(target), window.location.origin).href
+          : window.location.origin + "/auth",
+      },
+    });
+    if (error) toast.error("No se pudo iniciar sesión con Google.");
   }
 
   return (
@@ -103,12 +109,9 @@ function AuthPage() {
             <div className="h-px flex-1 bg-border" /> o <div className="h-px flex-1 bg-border" />
           </div>
           <div className="space-y-3">
-            <Button variant="outline" className="w-full rounded-full" onClick={() => oauth("google")}>
+            <Button variant="outline" className="w-full rounded-full" onClick={oauthGoogle}>
               Continuar con Google
             </Button>
-            <button type="button" className="lovable-auth-button w-full" onClick={() => oauth("lovable")}>
-              Continue with Lovable
-            </button>
           </div>
         </div>
         <button
