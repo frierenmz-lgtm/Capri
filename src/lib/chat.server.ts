@@ -1,4 +1,4 @@
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
 import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import { authenticate, json, type UserClient } from "./auth-request.server";
 import { buildSystemPrompt } from "./instructions";
@@ -6,7 +6,7 @@ import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
 
-const MODEL = "gemini-3.5-flash-lite";
+const MODEL = "openai/gpt-oss-120b";
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -47,10 +47,10 @@ export async function handleChat(request: Request) {
     }
   }
 
-  const apiKey = process.env["GOOGLE_GENERATIVE_AI_API_KEY"] ?? process.env["GEMINI_API_KEY"];
+  const apiKey = process.env["GROQ_API_KEY"];
   if (!apiKey) return json(500, "Falta configurar la IA.");
 
-  const provider = createGoogleGenerativeAI({ apiKey });
+  const provider = createGroq({ apiKey });
 
   let modelMessages: UIMessage[];
   try {
@@ -72,7 +72,6 @@ export async function handleChat(request: Request) {
     model: provider(MODEL),
     instructions: `${system}\n\nHoy es ${today}.`,
     messages: await convertToModelMessages(modelMessages),
-    tools: { google_search: provider.tools.googleSearch({}) },
     abortSignal: request.signal,
   });
 
@@ -80,6 +79,7 @@ export async function handleChat(request: Request) {
     originalMessages: messages,
     // Do not send or persist reasoning summaries: the UI does not render them.
     sendSources: true,
+    sendReasoning: false,
     // Every reply needs its own id; without it each reply is saved under the same empty id and overwrites the last one.
     generateMessageId: () => crypto.randomUUID(),
     onError: (error) => {
@@ -97,7 +97,7 @@ export async function handleChat(request: Request) {
           user_id: userId,
           message_id: responseMessage.id,
           role: "assistant",
-          parts: responseMessage.parts as never,
+          parts: responseMessage.parts.filter((part) => part.type !== "reasoning") as never,
         },
         { onConflict: "thread_id,message_id" },
       );
@@ -131,7 +131,7 @@ export async function handleChat(request: Request) {
 type ExtractedMemory = { category: "preferencia" | "proyecto" | "objetivo" | "contexto" | "otro"; content: string; importance: number; expiresInDays: number | null };
 
 async function extractAndSaveMemories(
-  provider: ReturnType<typeof createGoogleGenerativeAI>,
+  provider: ReturnType<typeof createGroq>,
   supabase: UserClient,
   userId: string,
   userText: string,
@@ -258,7 +258,7 @@ const textOf = (m: UIMessage) =>
   m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim().slice(0, 1500);
 
 async function generateTitle(
-  provider: ReturnType<typeof createGoogleGenerativeAI>,
+  provider: ReturnType<typeof createGroq>,
   messages: UIMessage[],
   reply: UIMessage,
 ) {

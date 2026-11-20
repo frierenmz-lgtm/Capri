@@ -2,17 +2,17 @@ import { authenticate, json } from "./auth-request.server";
 import { readBoundedBody } from "./bounded-body";
 import { MAX_AUDIO_BYTES, MAX_SPEECH_CHARS } from "./voice-limits";
 
-const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const SPEECH_MODEL = "gemini-3.8-flash-tts";
-const SPEECH_VOICE = "Kore";
-const TRANSCRIBE_MODEL = "gemini-3.5-flash-lite";
+const GROQ_API_BASE = "https://api.groq.com/openai/v1";
+const SPEECH_MODEL = "canopylabs/orpheus-v1-english";
+const SPEECH_VOICE = "troy";
+const TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
 const MAX_SPEECH_REQUEST_BYTES = 64 * 1024;
 const MAX_TRANSCRIBE_REQUEST_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
 
 const isAbort = (e: unknown) => (e as { name?: string })?.name === "AbortError";
 
-function geminiApiKey() {
-  return process.env["GOOGLE_GENERATIVE_AI_API_KEY"] ?? process.env["GEMINI_API_KEY"];
+function groqApiKey() {
+  return process.env["GROQ_API_KEY"];
 }
 
 function sseResponse(stream: ReadableStream<Uint8Array>) {
@@ -25,14 +25,66 @@ function sseEvent(payload: unknown) {
   return new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function geminiText(data: unknown): string {
-  const candidates = (data as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> })?.candidates;
-  return candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim() ?? "";
+/**
+ * Groq TTS answers with a WAV file. The client plays raw PCM16 mono at
+ * 24 kHz, so parse the WAV header, keep the PCM data and resample to
+ * 24 kHz when the file uses another rate. Returns null for anything that
+ * is not PCM16 mono audio.
+ */
+function wavToPcm24k(bytes: Uint8Array): Int16Array | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const textAt = (offset: number, length: number) =>
+    String.fromCharCode(...bytes.subarray(offset, offset + length));
+  if (bytes.length < 44 || textAt(0, 4) !== "RIFF" || textAt(8, 4) !== "WAVE") return null;
+  let offset = 12;
+  let format: number | null = null;
+  let channels: number | null = null;
+  let sampleRate: number | null = null;
+  let bitsPerSample: number | null = null;
+  let dataStart = -1;
+  let dataLength = -1;
+  while (offset + 8 <= bytes.length) {
+    const id = textAt(offset, 4);
+    const size = view.getUint32(offset + 4, true);
+    const body = offset + 8;
+    if (body + size > bytes.length) return null;
+    if (id === "fmt ") {
+      format = view.getUint16(body, true);
+      channels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+      bitsPerSample = view.getUint16(body + 14, true);
+    } else if (id === "data") {
+      dataStart = body;
+      dataLength = size;
+      break;
+    }
+    offset = body + size + (size % 2);
+  }
+  if (format !== 1 || channels !== 1 || !sampleRate || bitsPerSample !== 16 || dataStart < 0) return null;
+  const frames = Math.floor(dataLength / 2);
+  const pcm = new Int16Array(frames);
+  for (let i = 0; i < frames; i++) pcm[i] = view.getInt16(dataStart + i * 2, true);
+  if (sampleRate === 24000) return pcm;
+  const outLength = Math.max(1, Math.round((frames * 24000) / sampleRate));
+  const resampled = new Int16Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const position = (i * sampleRate) / 24000;
+    const index = Math.floor(position);
+    const frac = position - index;
+    const a = pcm[Math.min(index, frames - 1)] ?? 0;
+    const b = pcm[Math.min(index + 1, frames - 1)] ?? 0;
+    resampled[i] = Math.round(a + (b - a) * frac);
+  }
+  return resampled;
 }
 
-function geminiAudio(data: unknown): string | undefined {
-  const candidates = (data as { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string } }> } }> })?.candidates;
-  return candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data)?.inlineData?.data;
+function pcmToBase64(pcm: Int16Array): string {
+  const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
 }
 
 /** Reads one chunk of a Capri reply aloud: streams 24 kHz PCM over SSE. */
@@ -53,19 +105,18 @@ export async function handleSpeech(request: Request) {
   if (typeof text !== "string" || !text.trim() || Array.from(text).length > MAX_SPEECH_CHARS) {
     return json(400, "Texto inválido para leer.");
   }
-  const apiKey = geminiApiKey();
+  const apiKey = groqApiKey();
   if (!apiKey) return json(500, "Falta configurar la IA.");
-  let data: unknown;
+  let audio: string;
   try {
-    const upstream = await fetch(`${GEMINI_API_BASE}/models/${SPEECH_MODEL}:generateContent`, {
+    const upstream = await fetch(`${GROQ_API_BASE}/audio/speech`, {
       method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: SPEECH_VOICE } } },
-        },
+        model: SPEECH_MODEL,
+        input: text,
+        voice: SPEECH_VOICE,
+        response_format: "wav",
       }),
       signal: request.signal,
     });
@@ -73,19 +124,19 @@ export async function handleSpeech(request: Request) {
       console.error("speech", upstream.status, await upstream.text().catch(() => ""));
       return json(502, "No se pudo generar el audio.");
     }
-    data = await upstream.json();
+    const pcm = wavToPcm24k(new Uint8Array(await upstream.arrayBuffer()));
+    if (!pcm) {
+      console.error("speech", "unexpected audio format from Groq");
+      return json(502, "No se pudo generar el audio.");
+    }
+    audio = pcmToBase64(pcm);
   } catch (e) {
     if (isAbort(e)) return new Response(null, { status: 499 });
     console.error("speech", e);
     return json(502, "No se pudo generar el audio.");
   }
-  // Gemini TTS answers in one shot (base64 PCM 16-bit, 24 kHz, mono). The
-  // client expects OpenAI-style SSE deltas, so re-emit the audio in chunks.
-  const audio = geminiAudio(data);
-  if (!audio) {
-    console.error("speech", "no audio in Gemini response");
-    return json(502, "No se pudo generar el audio.");
-  }
+  // Groq TTS answers with a WAV file; the client expects OpenAI-style SSE
+  // deltas with base64 PCM, so re-emit the audio in chunks.
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       // Chunks must stay a multiple of 4 chars so each one is valid base64.
@@ -119,32 +170,24 @@ export async function handleTranscribe(request: Request) {
   if (!(file instanceof File) || !file.type.startsWith("audio/")) return json(400, "Audio no válido.");
   if (file.size < 2048) return json(400, "La grabación quedó vacía. Inténtalo de nuevo.");
   if (file.size > MAX_AUDIO_BYTES) return json(413, "La grabación es demasiado larga.");
-  const apiKey = geminiApiKey();
+  const apiKey = groqApiKey();
   if (!apiKey) return json(500, "Falta configurar la IA.");
   let text: string;
   try {
-    const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
-    const upstream = await fetch(`${GEMINI_API_BASE}/models/${TRANSCRIBE_MODEL}:generateContent`, {
+    const form = new FormData();
+    form.append("file", file, file.name || "audio.webm");
+    form.append("model", TRANSCRIBE_MODEL);
+    const upstream = await fetch(`${GROQ_API_BASE}/audio/transcriptions`, {
       method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: "Transcribe el siguiente audio tal cual, en el idioma que se habla. Devuelve solo la transcripción, sin explicaciones ni comillas." },
-              { inlineData: { mimeType: file.type || "audio/wav", data: base64 } },
-            ],
-          },
-        ],
-      }),
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
       signal: request.signal,
     });
     if (!upstream.ok) {
       console.error("transcribe", upstream.status, await upstream.text().catch(() => ""));
       return json(502, "No se pudo transcribir el audio.");
     }
-    text = geminiText(await upstream.json());
+    text = ((await upstream.json()) as { text?: unknown }).text as string;
   } catch (e) {
     if (isAbort(e)) return new Response(null, { status: 499 });
     console.error("transcribe", e);
