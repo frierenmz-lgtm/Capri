@@ -5,7 +5,7 @@ import { MAX_AUDIO_BYTES, MAX_SPEECH_CHARS } from "./voice-limits";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const SPEECH_MODEL = "gemini-3.8-flash-tts";
 const SPEECH_VOICE = "Kore";
-const TRANSCRIBE_MODEL = "gemini-3.8-flash";
+const TRANSCRIBE_MODEL = "gemini-3.5-flash-lite";
 const MAX_SPEECH_REQUEST_BYTES = 64 * 1024;
 const MAX_TRANSCRIBE_REQUEST_BYTES = MAX_AUDIO_BYTES + 64 * 1024;
 
