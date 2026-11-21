@@ -97,6 +97,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "stylesheet", href: appCss },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "apple-touch-icon", href: "/icon.svg" },
     ],
   }),
   shellComponent: RootShell,
@@ -131,6 +133,15 @@ function RootComponent() {
     });
     return () => data.subscription.unsubscribe();
   }, [router, queryClient]);
+
+  // Installable app: register the service worker only in production builds,
+  // so development never serves a cached shell.
+  useEffect(() => {
+    if (!import.meta.env.PROD || !("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/sw.js").catch((error) => {
+      console.error("service worker registration", error);
+    });
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
