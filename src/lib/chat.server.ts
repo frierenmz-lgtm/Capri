@@ -1,10 +1,11 @@
 import { createGroq } from "@ai-sdk/groq";
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from "ai";
 import { authenticate, json, type UserClient } from "./auth-request.server";
 import { buildSystemPrompt } from "./instructions";
 import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
+import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from "./web-search";
 
 const MODEL = "openai/gpt-oss-120b";
 
@@ -72,6 +73,9 @@ export async function handleChat(request: Request) {
     model: provider(MODEL),
     instructions: `${system}\n\nHoy es ${today}.`,
     messages: await convertToModelMessages(modelMessages),
+    // Web search via Tavily; at most two searches per turn (one credit each on the free plan).
+    tools: { [WEB_SEARCH_TOOL_NAME]: createWebSearchTool(process.env["TAVILY_API_KEY"]) },
+    stopWhen: stepCountIs(3),
     abortSignal: request.signal,
   });
 
