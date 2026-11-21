@@ -20,6 +20,96 @@ async function errorText(res: Response, fallback: string) {
   return fallback;
 }
 
+/* ---------- Voice mode ---------- */
+
+export type VoiceMode = "system" | "server";
+const VOICE_MODE_KEY = "capri-voice-mode";
+
+/** Which voice reads replies aloud. Stored on this device only: the phone's voice exists only here. Defaults to the phone's Spanish voice. */
+export function getVoiceMode(): VoiceMode {
+  try {
+    return localStorage.getItem(VOICE_MODE_KEY) === "server" ? "server" : "system";
+  } catch {
+    return "system";
+  }
+}
+
+export function setVoiceMode(mode: VoiceMode): void {
+  try {
+    localStorage.setItem(VOICE_MODE_KEY, mode);
+  } catch {
+    /* storage unavailable: the choice just doesn't stick */
+  }
+}
+
+/** Prefers Mexican Spanish, then Spain Spanish, then any Spanish voice. */
+export function pickSpanishVoice(voices: readonly SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+  const byLang = (lang: string) => voices.find((v) => v.lang.toLowerCase() === lang);
+  return byLang("es-mx") ?? byLang("es-es") ?? voices.find((v) => v.lang.toLowerCase().startsWith("es")) ?? null;
+}
+
+/** Device voices load asynchronously; waits briefly for them instead of reading the empty list. */
+function loadVoices(): Promise<SpeechSynthesisVoice[]> {
+  const synth = window.speechSynthesis;
+  const current = synth.getVoices();
+  if (current.length > 0) return Promise.resolve(current);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve(synth.getVoices());
+    };
+    synth.addEventListener("voiceschanged", finish, { once: true });
+    setTimeout(finish, 800);
+  });
+}
+
+/**
+ * Reads with the phone's own Spanish voice. Returns false when the device has no
+ * Spanish voice, so the caller can fall back to the server voice instead.
+ */
+async function speakSystem(text: string, signal: AbortSignal, onStart?: () => void): Promise<boolean> {
+  const synth = window.speechSynthesis;
+  const voice = pickSpanishVoice(await loadVoices());
+  if (!voice) return false;
+  // Short pieces: long utterances can stall in Chrome's speech synthesis.
+  const chunks = chunkText(speakableText(text), 400);
+  if (chunks.length === 0) return true;
+  let started = false;
+  for (const chunk of chunks) {
+    if (signal.aborted) {
+      synth.cancel();
+      return true;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+      const onAbort = () => synth.cancel();
+      const cleanup = () => signal.removeEventListener("abort", onAbort);
+      utterance.onstart = () => {
+        if (!started) {
+          started = true;
+          onStart?.();
+        }
+      };
+      utterance.onend = () => {
+        cleanup();
+        resolve();
+      };
+      utterance.onerror = (event) => {
+        cleanup();
+        if (signal.aborted || event.error === "canceled" || event.error === "interrupted") resolve();
+        else reject(new Error("No se pudo leer la respuesta."));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      synth.speak(utterance);
+    });
+  }
+  return true;
+}
+
 /* ---------- Read aloud ---------- */
 
 /** Plain text for the voice: code blocks are announced, not spelled out. */
@@ -128,6 +218,15 @@ async function playChunk(ctx: AudioContext, text: string, signal: AbortSignal, o
 
 /** Reads a reply aloud piece by piece. Call from a tap; abort the signal to stop. */
 export async function speak(markdown: string, signal: AbortSignal, onStart?: () => void) {
+  if (getVoiceMode() === "system" && typeof window !== "undefined" && "speechSynthesis" in window) {
+    const done = await speakSystem(markdown, signal, onStart).catch(() => false);
+    if (done || signal.aborted) return;
+  }
+  await speakServer(markdown, signal, onStart);
+}
+
+/** The server voice (Groq Orpheus, English only). */
+async function speakServer(markdown: string, signal: AbortSignal, onStart?: () => void) {
   const chunks = chunkText(speakableText(markdown));
   if (chunks.length === 0) return;
   const ctx = new AudioContext({ sampleRate: 24000 });

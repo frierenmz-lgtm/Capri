@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Download, Loader2, LogOut, Trash2, Plus, Pencil, X, Check } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { getVoiceMode, setVoiceMode, type VoiceMode } from "@/lib/voice";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import {
@@ -41,6 +42,8 @@ export function SettingsDialog({ trigger, personality }: { trigger: ReactNode; p
   const [memories, setMemories] = useState<Array<{ id: string; category: string; content: string; updated_at: string; source?: string; importance?: number; expires_at?: string | null }>>([]);
   const [memoryContent, setMemoryContent] = useState("");
   const [autoMemory, setAutoMemory] = useState(true);
+  const [voiceMode, setVoiceModeState] = useState<VoiceMode>(() => getVoiceMode());
+  const [spanishVoice, setSpanishVoice] = useState<boolean | null>(null);
   const [memoryCategory, setMemoryCategory] = useState("contexto");
   const [editingMemory, setEditingMemory] = useState<string | null>(null);
   const queryClient = useQueryClient();
@@ -73,6 +76,24 @@ export function SettingsDialog({ trigger, personality }: { trigger: ReactNode; p
     setMemories(data ?? []);
   }
 
+
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      setSpanishVoice(false);
+      return;
+    }
+    const check = () => setSpanishVoice(synth.getVoices().some((v) => v.lang.toLowerCase().startsWith("es")));
+    check();
+    synth.addEventListener("voiceschanged", check);
+    return () => synth.removeEventListener("voiceschanged", check);
+  }, []);
+
+  function changeVoiceMode(mode: VoiceMode) {
+    setVoiceMode(mode);
+    setVoiceModeState(mode);
+    toast.success(mode === "system" ? "Voz del teléfono activada." : "Voz de Capri activada.");
+  }
 
   async function toggleAutoMemory(enabled: boolean) {
     const { data: auth } = await supabase.auth.getUser();
@@ -194,6 +215,29 @@ export function SettingsDialog({ trigger, personality }: { trigger: ReactNode; p
             </Button>
           </Section>
           <Section title="Personalidad">{personality}</Section>
+          <Section title="Voz">
+            <div className="space-y-2">
+              <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                <input type="radio" name="voice-mode" checked={voiceMode === "system"} onChange={() => changeVoiceMode("system")} className="mt-1 size-4 accent-primary" />
+                <span>
+                  <span className="block font-medium">Voz del teléfono (español)</span>
+                  <span className="text-xs text-muted-foreground">Lee en español con la voz de tu dispositivo. Gratis, sin usar la IA del servidor.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                <input type="radio" name="voice-mode" checked={voiceMode === "server"} onChange={() => changeVoiceMode("server")} className="mt-1 size-4 accent-primary" />
+                <span>
+                  <span className="block font-medium">Voz de Capri (inglés)</span>
+                  <span className="text-xs text-muted-foreground">La voz del servidor. Solo habla inglés.</span>
+                </span>
+              </label>
+              {voiceMode === "system" && spanishVoice === false && (
+                <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                  Tu dispositivo no tiene una voz en español instalada; en ese caso Capri usa la voz del servidor.
+                </p>
+              )}
+            </div>
+          </Section>
           <Section title="Memoria de Capri">
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
