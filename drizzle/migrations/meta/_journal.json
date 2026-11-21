@@ -71,6 +71,13 @@
       "when": 1794139200000,
       "tag": "0009_capri_memory_opt_out",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795280072965,
+      "tag": "0010_threads_model",
+      "breakpoints": true
     }
   ]
 }

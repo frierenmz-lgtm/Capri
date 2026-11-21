@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import type { UIMessage } from "ai";
 import { supabase } from "@/integrations/supabase/client";
+import type { ChatModelId } from "./models";
 
 export type Thread = { id: string; title: string; updated_at: string };
 
@@ -52,13 +53,18 @@ export const threadQuery = (threadId: string) =>
     queryFn: async () => {
       const { data, error } = await supabase
         .from("threads")
-        .select("id,title,custom_instructions,share_id")
+        .select("id,title,custom_instructions,share_id,model")
         .eq("id", threadId)
         .maybeSingle();
       if (error) throw error;
       return data;
     },
   });
+
+export async function saveThreadModel(threadId: string, model: ChatModelId) {
+  const { error } = await supabase.from("threads").update({ model }).eq("id", threadId);
+  if (error) throw error;
+}
 
 export async function saveThreadInstructions(threadId: string, value: string) {
   const { error } = await supabase.from("threads").update({ custom_instructions: value }).eq("id", threadId);

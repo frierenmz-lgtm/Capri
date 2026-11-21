@@ -21,7 +21,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { messagesQuery, saveThreadInstructions, threadQuery } from "@/lib/threads";
+import { messagesQuery, saveThreadInstructions, saveThreadModel, threadQuery } from "@/lib/threads";
+import { CHAT_MODELS, resolveChatModel } from "@/lib/models";
 import {
   ATTACH_ACCEPT,
   IMAGE_BUCKET,
@@ -298,6 +299,28 @@ function ThreadBar({ threadId, messages }: { threadId: string; messages: UIMessa
   return (
     <div className="flex items-center gap-2 border-b px-4 py-2">
       <p className="min-w-0 flex-1 truncate text-sm font-medium">{thread?.title ?? ""}</p>
+      <select
+        value={resolveChatModel(thread?.model)}
+        disabled={!thread}
+        onChange={async (event) => {
+          const next = resolveChatModel(event.target.value);
+          try {
+            await saveThreadModel(threadId, next);
+            await queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
+          } catch {
+            toast.error("No se pudo cambiar el modelo.");
+          }
+        }}
+        aria-label="Modelo de este chat"
+        title={CHAT_MODELS.find((model) => model.id === resolveChatModel(thread?.model))?.hint ?? CHAT_MODELS[0]?.hint}
+        className="h-9 max-w-36 truncate rounded-md border bg-background px-2 text-sm"
+      >
+        {CHAT_MODELS.map((model) => (
+          <option key={model.id} value={model.id}>
+            {model.label}
+          </option>
+        ))}
+      </select>
       <Button
         variant="ghost"
         size="sm"

@@ -6,8 +6,7 @@ import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
 import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from "./web-search";
-
-const MODEL = "openai/gpt-oss-120b";
+import { DEFAULT_CHAT_MODEL, resolveChatModel } from "./models";
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -24,7 +23,7 @@ export async function handleChat(request: Request) {
   const { messages, threadId } = body;
 
   const [{ data: thread }, { data: settings }, { data: memoryRows, error: memoryError }] = await Promise.all([
-    supabase.from("threads").select("id,title,custom_instructions").eq("id", threadId).maybeSingle(),
+    supabase.from("threads").select("id,title,custom_instructions,model").eq("id", threadId).maybeSingle(),
     supabase.from("user_settings").select("default_instructions,memory_auto_enabled").eq("user_id", userId).maybeSingle(),
     supabase.from("capri_memories").select("id,content,category,updated_at,importance,expires_at").eq("user_id", userId).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).order("importance", { ascending: false }).order("updated_at", { ascending: false }).limit(50),
   ]);
@@ -70,7 +69,7 @@ export async function handleChat(request: Request) {
   });
 
   const result = streamText({
-    model: provider(MODEL),
+    model: provider(resolveChatModel(thread.model)),
     instructions: `${system}\n\nHoy es ${today}.`,
     messages: await convertToModelMessages(modelMessages),
     // Web search via Tavily; at most two searches per turn (one credit each on the free plan).
@@ -141,7 +140,7 @@ async function extractAndSaveMemories(
   userText: string,
 ) {
   const result = await streamText({
-    model: provider(MODEL),
+    model: provider(DEFAULT_CHAT_MODEL),
     instructions: `Extrae de lo que el usuario acaba de decir entre cero y tres recuerdos útiles para futuras conversaciones. Devuelve exclusivamente un JSON válido con la forma {"memories":[{"category":"preferencia|proyecto|objetivo|contexto|otro","content":"...","importance":1,"expiresInDays":null}]}. Guarda solo información explícita, estable y útil: preferencias de respuesta, proyectos, objetivos y contexto de trabajo. No guardes datos sensibles (salud, religión, política, sexualidad, datos financieros privados), secretos, contraseñas, datos de terceros, información pasajera ni suposiciones. No conviertas preguntas o hipótesis en hechos. Cada recuerdo debe ser una frase breve, en primera persona cuando corresponda, máximo 300 caracteres. importance va de 1 a 5. expiresInDays es null para recuerdos duraderos o un número de 7 a 365 para datos temporales. Si no hay nada claro, devuelve {"memories":[]}.`,
     prompt: `Mensaje del usuario:\n${userText.slice(0, 3000)}`,
     maxOutputTokens: 500,
@@ -268,7 +267,7 @@ async function generateTitle(
 ) {
   const user = messages.filter((m) => m.role === "user").map(textOf).join("\n");
   const result = streamText({
-    model: provider(MODEL),
+    model: provider(DEFAULT_CHAT_MODEL),
     instructions:
       "Genera un título corto (3 a 6 palabras) en el idioma de la conversación que resuma el tema. Responde solo con el título, sin comillas ni punto final.",
     prompt: `Usuario: ${user}\n\nAsistente: ${textOf(reply)}`,
