@@ -5,6 +5,8 @@ import { Download, Loader2, LogOut, Trash2, Plus, Pencil, X, Check } from "lucid
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { getVoiceMode, setVoiceMode, type VoiceMode } from "@/lib/voice";
+import { disablePush, enablePush, getPushState, type PushState } from "@/lib/push";
+import { formatReminderDue } from "@/lib/reminders";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import {
@@ -44,6 +46,9 @@ export function SettingsDialog({ trigger, personality }: { trigger: ReactNode; p
   const [autoMemory, setAutoMemory] = useState(true);
   const [voiceMode, setVoiceModeState] = useState<VoiceMode>(() => getVoiceMode());
   const [spanishVoice, setSpanishVoice] = useState<boolean | null>(null);
+  const [pushState, setPushState] = useState<PushState | null>(null);
+  const [busyPush, setBusyPush] = useState(false);
+  const [reminders, setReminders] = useState<Array<{ id: string; text: string; due_at: string; timezone: string; status: string }>>([]);
   const [memoryCategory, setMemoryCategory] = useState("contexto");
   const [editingMemory, setEditingMemory] = useState<string | null>(null);
   const queryClient = useQueryClient();
@@ -63,6 +68,58 @@ export function SettingsDialog({ trigger, personality }: { trigger: ReactNode; p
         else setMemories(data ?? []);
       });
   }, []);
+
+  useEffect(() => {
+    getPushState().then(setPushState);
+    void loadReminders();
+  }, []);
+
+  async function loadReminders() {
+    const { data, error } = await supabase
+      .from("reminders")
+      .select("id,text,due_at,timezone,status")
+      .order("due_at", { ascending: true })
+      .limit(50);
+    if (error) {
+      toast.error("No se pudieron cargar los recordatorios.");
+      return;
+    }
+    setReminders(data ?? []);
+  }
+
+  async function togglePush() {
+    setBusyPush(true);
+    if (pushState === "on") {
+      const result = await disablePush();
+      setBusyPush(false);
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      setPushState("off");
+      toast.success("Notificaciones desactivadas.");
+      return;
+    }
+    const result = await enablePush();
+    setBusyPush(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      setPushState(await getPushState());
+      return;
+    }
+    setPushState("on");
+    toast.success("Notificaciones activadas. Capri te avisará a la hora.");
+  }
+
+  async function cancelReminder(id: string) {
+    const { error } = await supabase.from("reminders").update({ status: "cancelled" }).eq("id", id);
+    if (error) {
+      toast.error("No se pudo cancelar el recordatorio.");
+      return;
+    }
+    setReminders((items) => items.filter((item) => item.id !== id));
+    toast.success("Recordatorio cancelado.");
+  }
 
   async function loadMemories() {
     const { data, error } = await supabase
@@ -236,6 +293,54 @@ export function SettingsDialog({ trigger, personality }: { trigger: ReactNode; p
                   Tu dispositivo no tiene una voz en español instalada; en ese caso Capri usa la voz del servidor.
                 </p>
               )}
+            </div>
+          </Section>
+          <Section title="Recordatorios">
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Pídele a Capri en el chat que te recuerde algo ("recuérdame mañana a las 8...") y te llega una notificación en tu teléfono a esa hora.
+              </p>
+              <label className="flex items-center gap-3 rounded-lg border p-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={pushState === "on"}
+                  disabled={pushState === null || pushState === "unsupported" || pushState === "denied" || busyPush}
+                  onChange={() => void togglePush()}
+                  className="size-4 accent-primary"
+                />
+                <span>
+                  <span className="block font-medium">Notificaciones en el teléfono</span>
+                  <span className="text-xs text-muted-foreground">
+                    {pushState === "denied"
+                      ? "Bloqueadas en tu teléfono: actívalas en Ajustes de Chrome > Notificaciones."
+                      : pushState === "unsupported"
+                        ? "Este navegador no admite notificaciones push."
+                        : "Capri te avisa aunque la app esté cerrada."}
+                  </span>
+                </span>
+              </label>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Tus recordatorios</p>
+                {reminders.length === 0 ? (
+                  <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Todavía no tienes recordatorios.</p>
+                ) : (
+                  reminders.map((reminder) => (
+                    <div key={reminder.id} className="flex items-start gap-2 rounded-md border p-3">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {reminder.status === "sent" ? "Enviado" : "Pendiente"} · {formatReminderDue(reminder.due_at, reminder.timezone)}
+                        </p>
+                        <p className="break-words text-sm">{reminder.text}</p>
+                      </div>
+                      {reminder.status === "pending" && (
+                        <Button variant="ghost" size="icon" aria-label="Cancelar recordatorio" onClick={() => void cancelReminder(reminder.id)}>
+                          <X className="size-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </Section>
           <Section title="Memoria de Capri">

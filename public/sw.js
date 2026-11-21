@@ -1,6 +1,6 @@
 // Capri service worker: keeps the installed app usable offline.
 // Versioned cache; API calls and cross-origin requests always go to the network.
-const CACHE = "capri-v1";
+const CACHE = "capri-v2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -12,6 +12,31 @@ self.addEventListener("activate", (event) => {
       .keys()
       .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
+  );
+});
+
+self.addEventListener("push", (event) => {
+  const data = event.data?.json() ?? {};
+  event.waitUntil(
+    self.registration.showNotification(data.title ?? "Capri: recordatorio", {
+      body: data.body ?? "",
+      icon: "/icon.svg",
+      badge: "/icon.svg",
+      data: { url: data.url ?? "/chat" },
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url ?? "/chat";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) return client.focus();
+      }
+      return self.clients.openWindow(url);
+    }),
   );
 });
 

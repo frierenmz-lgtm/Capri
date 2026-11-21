@@ -7,6 +7,7 @@ import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
 import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from "./web-search";
 import { DEFAULT_CHAT_MODEL, resolveChatModel } from "./models";
+import { createReminderTools } from "./reminders.server";
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -67,13 +68,21 @@ export async function handleChat(request: Request) {
     day: "numeric",
     timeZone: "America/Mexico_City",
   });
+  const now = new Date().toLocaleTimeString("es-MX", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Mexico_City",
+  });
 
   const result = streamText({
     model: provider(resolveChatModel(thread.model)),
-    instructions: `${system}\n\nHoy es ${today}.`,
+    instructions: `${system}\n\nHoy es ${today} y son las ${now} (hora de Ciudad de México, UTC-06:00).`,
     messages: await convertToModelMessages(modelMessages),
     // Web search via Tavily; at most two searches per turn (one credit each on the free plan).
-    tools: { [WEB_SEARCH_TOOL_NAME]: createWebSearchTool(process.env["TAVILY_API_KEY"]) },
+    tools: {
+      [WEB_SEARCH_TOOL_NAME]: createWebSearchTool(process.env["TAVILY_API_KEY"]),
+      ...createReminderTools(supabase, userId, threadId),
+    },
     stopWhen: stepCountIs(3),
     abortSignal: request.signal,
   });
