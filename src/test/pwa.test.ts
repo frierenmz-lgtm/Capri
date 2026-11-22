@@ -28,6 +28,9 @@ describe("installable app", () => {
       expect(shortcut.icons?.length).toBeGreaterThan(0);
       for (const icon of shortcut.icons ?? []) {
         expect(icon.src.startsWith("/")).toBe(true);
+        // Chrome does not support SVG for shortcut icons: PNG only.
+        expect(icon.type).toBe("image/png");
+        expect(icon.sizes).toBe("192x192");
       }
     }
   });
