@@ -58,6 +58,7 @@ export type Database = {
           custom_instructions: string
           id: string
           model: string
+          pinned: boolean
           share_id: string | null
           title: string
           updated_at: string
@@ -68,6 +69,7 @@ export type Database = {
           custom_instructions?: string
           id?: string
           model?: string
+          pinned?: boolean
           share_id?: string | null
           title?: string
           updated_at?: string
@@ -78,6 +80,7 @@ export type Database = {
           custom_instructions?: string
           id?: string
           model?: string
+          pinned?: boolean
           share_id?: string | null
           title?: string
           updated_at?: string

@@ -3,14 +3,22 @@ import type { UIMessage } from "ai";
 import { supabase } from "@/integrations/supabase/client";
 import type { ChatModelId } from "./models";
 
-export type Thread = { id: string; title: string; updated_at: string };
+export type Thread = { id: string; title: string; updated_at: string; pinned: boolean };
+
+/** Splits a thread list (already ordered pinned-first) into its pinned group and the rest, keeping each group's order. */
+export function splitPinned(threads: Thread[]): { pinned: Thread[]; rest: Thread[] } {
+  const pinned = threads.filter((t) => t.pinned);
+  const rest = threads.filter((t) => !t.pinned);
+  return { pinned, rest };
+}
 
 export const threadsQuery = queryOptions({
   queryKey: ["threads"],
   queryFn: async (): Promise<Thread[]> => {
     const { data, error } = await supabase
       .from("threads")
-      .select("id,title,updated_at")
+      .select("id,title,updated_at,pinned")
+      .order("pinned", { ascending: false })
       .order("updated_at", { ascending: false });
     if (error) throw error;
     return data;
@@ -63,6 +71,11 @@ export const threadQuery = (threadId: string) =>
 
 export async function saveThreadModel(threadId: string, model: ChatModelId) {
   const { error } = await supabase.from("threads").update({ model }).eq("id", threadId);
+  if (error) throw error;
+}
+
+export async function saveThreadPinned(threadId: string, pinned: boolean) {
+  const { error } = await supabase.from("threads").update({ pinned }).eq("id", threadId);
   if (error) throw error;
 }
 

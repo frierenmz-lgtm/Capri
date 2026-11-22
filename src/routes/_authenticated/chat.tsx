@@ -1,10 +1,10 @@
 import { createFileRoute, Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Loader2, Menu, Plus, Search, Settings, Sparkles, Trash2, X } from "lucide-react";
+import { Loader2, Menu, Pin, Plus, Search, Settings, Sparkles, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { createThread, deleteThread, saveDefaultInstructions, settingsQuery, threadsQuery } from "@/lib/threads";
+import { createThread, deleteThread, saveDefaultInstructions, saveThreadPinned, settingsQuery, splitPinned, threadsQuery, type Thread } from "@/lib/threads";
 import { MIN_SEARCH, matchesTerm, messageSearchQuery, splitHighlight, stripMarkdown } from "@/lib/search";
 import { CapriMark } from "@/components/capri-mark";
 import { InstructionsDialog } from "@/components/instructions-dialog";
@@ -54,6 +54,7 @@ function ChatLayout() {
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
   const visible = q ? threads.filter((t) => matchesTerm(t.title, q)) : threads;
+  const { pinned, rest } = splitPinned(visible);
   const [deepTerm, setDeepTerm] = useState("");
   useEffect(() => {
     const id = setTimeout(() => setDeepTerm(search.trim()), 250);
@@ -136,6 +137,56 @@ function ChatLayout() {
     }
   }
 
+  async function togglePin(thread: Thread) {
+    try {
+      await saveThreadPinned(thread.id, !thread.pinned);
+      await queryClient.invalidateQueries({ queryKey: ["threads"] });
+    } catch {
+      toast.error("No se pudo fijar la conversación.");
+    }
+  }
+
+  function threadRow(t: Thread) {
+    return (
+      <div
+        key={t.id}
+        className={cn(
+          "group flex items-center rounded-lg text-sm",
+          params.threadId === t.id ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
+        )}
+      >
+        <Link
+          to="/chat/$threadId"
+          params={{ threadId: t.id }}
+          onClick={() => setOpen(false)}
+          className="flex-1 truncate px-3 py-2"
+        >
+          {q ? <Highlight text={t.title} term={q} /> : t.title}
+        </Link>
+        <button
+          type="button"
+          onClick={() => togglePin(t)}
+          aria-label={t.pinned ? "Desfijar conversación" : "Fijar conversación"}
+          title={t.pinned ? "Desfijar conversación" : "Fijar conversación"}
+          className={cn(
+            "rounded p-1.5 group-hover:opacity-100",
+            t.pinned ? "text-primary opacity-100" : "text-muted-foreground opacity-60",
+          )}
+        >
+          <Pin className="size-4" fill={t.pinned ? "currentColor" : "none"} />
+        </button>
+        <button
+          type="button"
+          onClick={() => remove(t.id)}
+          aria-label="Borrar conversación"
+          className="mr-1 rounded p-1.5 text-muted-foreground opacity-60 hover:text-destructive group-hover:opacity-100"
+        >
+          <Trash2 className="size-4" />
+        </button>
+      </div>
+    );
+  }
+
   async function signOut() {
     await queryClient.cancelQueries();
     queryClient.clear();
@@ -180,32 +231,20 @@ function ChatLayout() {
           {q && visible.length > 0 && (
             <p className="px-3 pb-1 pt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Títulos</p>
           )}
-          {visible.map((t) => (
-            <div
-              key={t.id}
-              className={cn(
-                "group flex items-center rounded-lg text-sm",
-                params.threadId === t.id ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
+          {!q && pinned.length > 0 && (
+            <>
+              <p className="px-3 pb-1 pt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Fijados
+              </p>
+              {pinned.map((t) => threadRow(t))}
+              {rest.length > 0 && (
+                <p className="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Conversaciones
+                </p>
               )}
-            >
-              <Link
-                to="/chat/$threadId"
-                params={{ threadId: t.id }}
-                onClick={() => setOpen(false)}
-                className="flex-1 truncate px-3 py-2"
-              >
-                {q ? <Highlight text={t.title} term={q} /> : t.title}
-              </Link>
-              <button
-                type="button"
-                onClick={() => remove(t.id)}
-                aria-label="Borrar conversación"
-                className="mr-1 rounded p-1.5 text-muted-foreground opacity-60 hover:text-destructive group-hover:opacity-100"
-              >
-                <Trash2 className="size-4" />
-              </button>
-            </div>
-          ))}
+            </>
+          )}
+          {q ? visible.map((t) => threadRow(t)) : rest.map((t) => threadRow(t))}
           {deepActive && (
             <>
               <p className="px-3 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
