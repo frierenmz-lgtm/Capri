@@ -14,4 +14,12 @@ describe("App routing", () => {
 
     expect(matches.at(-1)?.routeId).not.toBe(rootRouteId);
   });
+
+  it("matches /chat/nuevo as its own route, not as a thread id", () => {
+    const router = createRouter({ routeTree, context: { queryClient: new QueryClient() } });
+
+    const matches = router.matchRoutes("/chat/nuevo");
+
+    expect(matches.at(-1)?.routeId).toBe("/_authenticated/chat/nuevo");
+  });
 });

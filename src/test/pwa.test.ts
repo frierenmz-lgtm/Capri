@@ -11,7 +11,27 @@ const maskablePath = join(process.cwd(), "public", "icon-maskable.svg");
 
 type ManifestIcon = { src: string; sizes: string; type: string; purpose?: string };
 
+type ManifestShortcut = { name: string; url: string; icons?: ManifestIcon[] };
+
 describe("installable app", () => {
+  it("declara atajos en el icono: nueva conversación y mis conversaciones", () => {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      shortcuts?: ManifestShortcut[];
+    };
+    const shortcuts = manifest.shortcuts ?? [];
+    const byUrl = new Map(shortcuts.map((s) => [s.url, s]));
+    expect(byUrl.get("/chat/nuevo")?.name).toBe("Nueva conversación");
+    expect(byUrl.get("/chat")?.name).toBe("Mis conversaciones");
+    for (const shortcut of shortcuts) {
+      expect(shortcut.url.startsWith("/")).toBe(true);
+      // Chrome ignores shortcuts without an icon.
+      expect(shortcut.icons?.length).toBeGreaterThan(0);
+      for (const icon of shortcut.icons ?? []) {
+        expect(icon.src.startsWith("/")).toBe(true);
+      }
+    }
+  });
+
   it("declara un manifiesto con lo que Chrome pide para instalar", () => {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
       name?: string;

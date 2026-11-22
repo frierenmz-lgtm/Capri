@@ -22,6 +22,7 @@ import { Route as SShareIdRouteImport } from './routes/s.$shareId'
 import { Route as DotlovableOauthConsentRouteImport } from './routes/[.]lovable.oauth.consent'
 import { Route as AuthenticatedChatIndexRouteImport } from './routes/_authenticated/chat.index'
 import { Route as AuthenticatedChatThreadIdRouteImport } from './routes/_authenticated/chat.$threadId'
+import { Route as AuthenticatedChatNuevoRouteImport } from './routes/_authenticated/chat.nuevo'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -89,6 +90,11 @@ const AuthenticatedChatThreadIdRoute =
     path: '/$threadId',
     getParentRoute: () => AuthenticatedChatRoute,
   } as any)
+const AuthenticatedChatNuevoRoute = AuthenticatedChatNuevoRouteImport.update({
+  id: '/nuevo',
+  path: '/nuevo',
+  getParentRoute: () => AuthenticatedChatRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -102,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/s/$shareId': typeof SShareIdRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
+  '/chat/nuevo': typeof AuthenticatedChatNuevoRoute
   '/chat/': typeof AuthenticatedChatIndexRoute
 }
 export interface FileRoutesByTo {
@@ -115,6 +122,7 @@ export interface FileRoutesByTo {
   '/s/$shareId': typeof SShareIdRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
+  '/chat/nuevo': typeof AuthenticatedChatNuevoRoute
   '/chat': typeof AuthenticatedChatIndexRoute
 }
 export interface FileRoutesById {
@@ -131,6 +139,7 @@ export interface FileRoutesById {
   '/s/$shareId': typeof SShareIdRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/_authenticated/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
+  '/_authenticated/chat/nuevo': typeof AuthenticatedChatNuevoRoute
   '/_authenticated/chat/': typeof AuthenticatedChatIndexRoute
 }
 export interface FileRouteTypes {
@@ -147,6 +156,7 @@ export interface FileRouteTypes {
     | '/s/$shareId'
     | '/.lovable/oauth/consent'
     | '/chat/$threadId'
+    | '/chat/nuevo'
     | '/chat/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -160,6 +170,7 @@ export interface FileRouteTypes {
     | '/s/$shareId'
     | '/.lovable/oauth/consent'
     | '/chat/$threadId'
+    | '/chat/nuevo'
     | '/chat'
   id:
     | '__root__'
@@ -175,6 +186,7 @@ export interface FileRouteTypes {
     | '/s/$shareId'
     | '/.lovable/oauth/consent'
     | '/_authenticated/chat/$threadId'
+    | '/_authenticated/chat/nuevo'
     | '/_authenticated/chat/'
   fileRoutesById: FileRoutesById
 }
@@ -284,16 +296,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatThreadIdRouteImport
       parentRoute: typeof AuthenticatedChatRoute
     }
+    '/_authenticated/chat/nuevo': {
+      id: '/_authenticated/chat/nuevo'
+      path: '/nuevo'
+      fullPath: '/chat/nuevo'
+      preLoaderRoute: typeof AuthenticatedChatNuevoRouteImport
+      parentRoute: typeof AuthenticatedChatRoute
+    }
   }
 }
 
 interface AuthenticatedChatRouteChildren {
   AuthenticatedChatThreadIdRoute: typeof AuthenticatedChatThreadIdRoute
+  AuthenticatedChatNuevoRoute: typeof AuthenticatedChatNuevoRoute
   AuthenticatedChatIndexRoute: typeof AuthenticatedChatIndexRoute
 }
 
 const AuthenticatedChatRouteChildren: AuthenticatedChatRouteChildren = {
   AuthenticatedChatThreadIdRoute: AuthenticatedChatThreadIdRoute,
+  AuthenticatedChatNuevoRoute: AuthenticatedChatNuevoRoute,
   AuthenticatedChatIndexRoute: AuthenticatedChatIndexRoute,
 }
 
