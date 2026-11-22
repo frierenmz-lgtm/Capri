@@ -15,14 +15,17 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as McpRouteImport } from './routes/mcp'
 import { Route as Char91DotwellKnownChar93OauthProtectedResourceRouteImport } from './routes/[.well-known]/oauth-protected-resource'
 import { Route as AuthenticatedChatRouteImport } from './routes/_authenticated/chat'
+import { Route as AuthenticatedEstudioRouteImport } from './routes/_authenticated/estudio'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiSpeechRouteImport } from './routes/api/speech'
+import { Route as ApiStudyRouteImport } from './routes/api/study'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as SShareIdRouteImport } from './routes/s.$shareId'
 import { Route as DotlovableOauthConsentRouteImport } from './routes/[.]lovable.oauth.consent'
 import { Route as AuthenticatedChatIndexRouteImport } from './routes/_authenticated/chat.index'
 import { Route as AuthenticatedChatThreadIdRouteImport } from './routes/_authenticated/chat.$threadId'
 import { Route as AuthenticatedChatNuevoRouteImport } from './routes/_authenticated/chat.nuevo'
+import { Route as AuthenticatedEstudioQuizIdRouteImport } from './routes/_authenticated/estudio.$quizId'
 import { Route as AuthenticatedChatProyectoProjectIdRouteImport } from './routes/_authenticated/chat.proyecto.$projectId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -55,6 +58,11 @@ const AuthenticatedChatRoute = AuthenticatedChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedEstudioRoute = AuthenticatedEstudioRouteImport.update({
+  id: '/estudio',
+  path: '/estudio',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const ApiChatRoute = ApiChatRouteImport.update({
   id: '/api/chat',
   path: '/api/chat',
@@ -63,6 +71,11 @@ const ApiChatRoute = ApiChatRouteImport.update({
 const ApiSpeechRoute = ApiSpeechRouteImport.update({
   id: '/api/speech',
   path: '/api/speech',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiStudyRoute = ApiStudyRouteImport.update({
+  id: '/api/study',
+  path: '/api/study',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
@@ -96,6 +109,12 @@ const AuthenticatedChatNuevoRoute = AuthenticatedChatNuevoRouteImport.update({
   path: '/nuevo',
   getParentRoute: () => AuthenticatedChatRoute,
 } as any)
+const AuthenticatedEstudioQuizIdRoute =
+  AuthenticatedEstudioQuizIdRouteImport.update({
+    id: '/$quizId',
+    path: '/$quizId',
+    getParentRoute: () => AuthenticatedEstudioRoute,
+  } as any)
 const AuthenticatedChatProyectoProjectIdRoute =
   AuthenticatedChatProyectoProjectIdRouteImport.update({
     id: '/proyecto/$projectId',
@@ -109,13 +128,16 @@ export interface FileRoutesByFullPath {
   '/mcp': typeof McpRoute
   '/.well-known/oauth-protected-resource': typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   '/chat': typeof AuthenticatedChatRouteWithChildren
+  '/estudio': typeof AuthenticatedEstudioRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/speech': typeof ApiSpeechRoute
+  '/api/study': typeof ApiStudyRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/s/$shareId': typeof SShareIdRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
   '/chat/nuevo': typeof AuthenticatedChatNuevoRoute
+  '/estudio/$quizId': typeof AuthenticatedEstudioQuizIdRoute
   '/chat/': typeof AuthenticatedChatIndexRoute
   '/chat/proyecto/$projectId': typeof AuthenticatedChatProyectoProjectIdRoute
 }
@@ -124,13 +146,16 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/mcp': typeof McpRoute
   '/.well-known/oauth-protected-resource': typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
+  '/estudio': typeof AuthenticatedEstudioRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/speech': typeof ApiSpeechRoute
+  '/api/study': typeof ApiStudyRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/s/$shareId': typeof SShareIdRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
   '/chat/nuevo': typeof AuthenticatedChatNuevoRoute
+  '/estudio/$quizId': typeof AuthenticatedEstudioQuizIdRoute
   '/chat': typeof AuthenticatedChatIndexRoute
   '/chat/proyecto/$projectId': typeof AuthenticatedChatProyectoProjectIdRoute
 }
@@ -142,13 +167,16 @@ export interface FileRoutesById {
   '/mcp': typeof McpRoute
   '/.well-known/oauth-protected-resource': typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   '/_authenticated/chat': typeof AuthenticatedChatRouteWithChildren
+  '/_authenticated/estudio': typeof AuthenticatedEstudioRouteWithChildren
   '/api/chat': typeof ApiChatRoute
   '/api/speech': typeof ApiSpeechRoute
+  '/api/study': typeof ApiStudyRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/s/$shareId': typeof SShareIdRoute
   '/.lovable/oauth/consent': typeof DotlovableOauthConsentRoute
   '/_authenticated/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
   '/_authenticated/chat/nuevo': typeof AuthenticatedChatNuevoRoute
+  '/_authenticated/estudio/$quizId': typeof AuthenticatedEstudioQuizIdRoute
   '/_authenticated/chat/': typeof AuthenticatedChatIndexRoute
   '/_authenticated/chat/proyecto/$projectId': typeof AuthenticatedChatProyectoProjectIdRoute
 }
@@ -160,13 +188,16 @@ export interface FileRouteTypes {
     | '/mcp'
     | '/.well-known/oauth-protected-resource'
     | '/chat'
+    | '/estudio'
     | '/api/chat'
     | '/api/speech'
+    | '/api/study'
     | '/api/transcribe'
     | '/s/$shareId'
     | '/.lovable/oauth/consent'
     | '/chat/$threadId'
     | '/chat/nuevo'
+    | '/estudio/$quizId'
     | '/chat/'
     | '/chat/proyecto/$projectId'
   fileRoutesByTo: FileRoutesByTo
@@ -175,13 +206,16 @@ export interface FileRouteTypes {
     | '/auth'
     | '/mcp'
     | '/.well-known/oauth-protected-resource'
+    | '/estudio'
     | '/api/chat'
     | '/api/speech'
+    | '/api/study'
     | '/api/transcribe'
     | '/s/$shareId'
     | '/.lovable/oauth/consent'
     | '/chat/$threadId'
     | '/chat/nuevo'
+    | '/estudio/$quizId'
     | '/chat'
     | '/chat/proyecto/$projectId'
   id:
@@ -192,13 +226,16 @@ export interface FileRouteTypes {
     | '/mcp'
     | '/.well-known/oauth-protected-resource'
     | '/_authenticated/chat'
+    | '/_authenticated/estudio'
     | '/api/chat'
     | '/api/speech'
+    | '/api/study'
     | '/api/transcribe'
     | '/s/$shareId'
     | '/.lovable/oauth/consent'
     | '/_authenticated/chat/$threadId'
     | '/_authenticated/chat/nuevo'
+    | '/_authenticated/estudio/$quizId'
     | '/_authenticated/chat/'
     | '/_authenticated/chat/proyecto/$projectId'
   fileRoutesById: FileRoutesById
@@ -211,6 +248,7 @@ export interface RootRouteChildren {
   Char91DotwellKnownChar93OauthProtectedResourceRoute: typeof Char91DotwellKnownChar93OauthProtectedResourceRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiSpeechRoute: typeof ApiSpeechRoute
+  ApiStudyRoute: typeof ApiStudyRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
   SShareIdRoute: typeof SShareIdRoute
   DotlovableOauthConsentRoute: typeof DotlovableOauthConsentRoute
@@ -260,6 +298,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/estudio': {
+      id: '/_authenticated/estudio'
+      path: '/estudio'
+      fullPath: '/estudio'
+      preLoaderRoute: typeof AuthenticatedEstudioRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/chat': {
       id: '/api/chat'
       path: '/api/chat'
@@ -272,6 +317,13 @@ declare module '@tanstack/react-router' {
       path: '/api/speech'
       fullPath: '/api/speech'
       preLoaderRoute: typeof ApiSpeechRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/study': {
+      id: '/api/study'
+      path: '/api/study'
+      fullPath: '/api/study'
+      preLoaderRoute: typeof ApiStudyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/transcribe': {
@@ -316,6 +368,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatNuevoRouteImport
       parentRoute: typeof AuthenticatedChatRoute
     }
+    '/_authenticated/estudio/$quizId': {
+      id: '/_authenticated/estudio/$quizId'
+      path: '/$quizId'
+      fullPath: '/estudio/$quizId'
+      preLoaderRoute: typeof AuthenticatedEstudioQuizIdRouteImport
+      parentRoute: typeof AuthenticatedEstudioRoute
+    }
     '/_authenticated/chat/proyecto/$projectId': {
       id: '/_authenticated/chat/proyecto/$projectId'
       path: '/proyecto/$projectId'
@@ -344,12 +403,25 @@ const AuthenticatedChatRouteChildren: AuthenticatedChatRouteChildren = {
 const AuthenticatedChatRouteWithChildren =
   AuthenticatedChatRoute._addFileChildren(AuthenticatedChatRouteChildren)
 
+interface AuthenticatedEstudioRouteChildren {
+  AuthenticatedEstudioQuizIdRoute: typeof AuthenticatedEstudioQuizIdRoute
+}
+
+const AuthenticatedEstudioRouteChildren: AuthenticatedEstudioRouteChildren = {
+  AuthenticatedEstudioQuizIdRoute: AuthenticatedEstudioQuizIdRoute,
+}
+
+const AuthenticatedEstudioRouteWithChildren =
+  AuthenticatedEstudioRoute._addFileChildren(AuthenticatedEstudioRouteChildren)
+
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedChatRoute: typeof AuthenticatedChatRouteWithChildren
+  AuthenticatedEstudioRoute: typeof AuthenticatedEstudioRouteWithChildren
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedChatRoute: AuthenticatedChatRouteWithChildren,
+  AuthenticatedEstudioRoute: AuthenticatedEstudioRouteWithChildren,
 }
 
 const AuthenticatedRouteRouteWithChildren =
@@ -364,6 +436,7 @@ const rootRouteChildren: RootRouteChildren = {
     Char91DotwellKnownChar93OauthProtectedResourceRoute,
   ApiChatRoute: ApiChatRoute,
   ApiSpeechRoute: ApiSpeechRoute,
+  ApiStudyRoute: ApiStudyRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
   SShareIdRoute: SShareIdRoute,
   DotlovableOauthConsentRoute: DotlovableOauthConsentRoute,

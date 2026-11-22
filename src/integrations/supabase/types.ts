@@ -191,6 +191,91 @@ export type Database = {
           },
         ]
       }
+      study_quizzes: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          id: string
+          project_id: string | null
+          question_count: number
+          score: number | null
+          topic: string
+          user_id: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          project_id?: string | null
+          question_count?: number
+          score?: number | null
+          topic: string
+          user_id?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          project_id?: string | null
+          question_count?: number
+          score?: number | null
+          topic?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_quizzes_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_questions: {
+        Row: {
+          answer_index: number
+          created_at: string
+          explanation: string
+          id: string
+          options: Json
+          question: string
+          quiz_id: string
+          user_answer: number | null
+          user_id: string
+        }
+        Insert: {
+          answer_index: number
+          created_at?: string
+          explanation?: string
+          id?: string
+          options: Json
+          question: string
+          quiz_id: string
+          user_answer?: number | null
+          user_id?: string
+        }
+        Update: {
+          answer_index?: number
+          created_at?: string
+          explanation?: string
+          id?: string
+          options?: Json
+          question?: string
+          quiz_id?: string
+          user_answer?: number | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_questions_quiz_id_fkey"
+            columns: ["quiz_id"]
+            isOneToOne: false
+            referencedRelation: "study_quizzes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

@@ -30,4 +30,11 @@ describe("App routing", () => {
 
     expect(matches.at(-1)?.routeId).toBe("/_authenticated/chat/proyecto/$projectId");
   });
+
+  it("matches /estudio and /estudio/$quizId", () => {
+    const router = createRouter({ routeTree, context: { queryClient: new QueryClient() } });
+
+    expect(router.matchRoutes("/estudio").at(-1)?.routeId).toBe("/_authenticated/estudio");
+    expect(router.matchRoutes("/estudio/123").at(-1)?.routeId).toBe("/_authenticated/estudio/$quizId");
+  });
 });

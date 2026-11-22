@@ -1,7 +1,7 @@
 import { createFileRoute, Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Loader2, Folder, FolderPlus, Menu, Pin, Plus, Search, Settings, Sparkles, Trash2, X } from "lucide-react";
+import { GraduationCap, Loader2, Folder, FolderPlus, Menu, Pin, Plus, Search, Settings, Sparkles, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { createThread, deleteThread, saveDefaultInstructions, saveThreadPinned, settingsQuery, splitPinned, threadsQuery, type Thread } from "@/lib/threads";
@@ -383,6 +383,13 @@ function ChatLayout() {
           )}
         </nav>
         <div className="space-y-1 border-t p-3">
+          <Link
+            to="/estudio"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-sidebar-accent/60"
+          >
+            <GraduationCap className="size-4" /> Modo estudio
+          </Link>
           <SettingsDialog
             trigger={
               <Button variant="ghost" className="w-full justify-start gap-2 text-muted-foreground">

@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, FileText, FolderOpen, Plus, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, FileText, FolderOpen, GraduationCap, Plus, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { ATTACH_ACCEPT } from "@/lib/images";
 import { createThread } from "@/lib/threads";
@@ -162,6 +162,14 @@ function ProjectPage() {
         />
         <Button variant="outline" size="sm" onClick={newThread} className="gap-1.5">
           <Plus className="size-4" /> Nueva conversación
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate({ to: "/estudio", search: { projectId } })}
+          className="gap-1.5"
+        >
+          <GraduationCap className="size-4" /> Estudiar este proyecto
         </Button>
       </div>
 
