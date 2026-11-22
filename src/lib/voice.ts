@@ -280,8 +280,56 @@ function encodeWav(chunks: readonly Float32Array[], sampleRate: number): Blob {
 
 export type Recording = { stop: () => Promise<File>; cancel: () => void };
 
-/** Starts the microphone. `onLimit` fires when the maximum length is reached. */
-export async function startRecording(onLimit: () => void): Promise<Recording> {
+export type SilenceTracker = {
+  feed: (samples: Float32Array, nowMs: number) => void;
+  reset: () => void;
+};
+
+/**
+ * Watches audio levels and fires once after the user has spoken and then gone
+ * quiet for `silenceMs`. Silence before any speech never fires, so the
+ * recorder keeps waiting while the user thinks.
+ */
+export function createSilenceTracker(opts: { silenceMs: number; onSilence: () => void }): SilenceTracker {
+  const RMS_THRESHOLD = 0.015;
+  let heardSpeech = false;
+  let silentSince: number | null = null;
+  let fired = false;
+  return {
+    feed(samples, nowMs) {
+      if (fired) return;
+      let sum = 0;
+      for (const value of samples) sum += value * value;
+      const rms = samples.length ? Math.sqrt(sum / samples.length) : 0;
+      if (rms > RMS_THRESHOLD) {
+        heardSpeech = true;
+        silentSince = null;
+        return;
+      }
+      if (!heardSpeech) return;
+      if (silentSince === null) silentSince = nowMs;
+      if (nowMs - silentSince >= opts.silenceMs) {
+        fired = true;
+        opts.onSilence();
+      }
+    },
+    reset() {
+      heardSpeech = false;
+      silentSince = null;
+      fired = false;
+    },
+  };
+}
+
+/**
+ * Starts the microphone. `onLimit` fires when the maximum length is reached.
+ * With `opts`, the recording also ends by itself after `silenceMs` of quiet
+ * following speech (used by hands-free voice mode).
+ */
+export async function startRecording(
+  onLimit: () => void,
+  opts?: { silenceMs?: number; onSilence?: () => void },
+): Promise<Recording> {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error("Tu navegador no permite usar el micrófono.");
   let stream: MediaStream;
   try {
@@ -295,7 +343,15 @@ export async function startRecording(onLimit: () => void): Promise<Recording> {
     const source = ctx.createMediaStreamSource(stream);
     const node = ctx.createScriptProcessor(4096, 1, 1);
     const chunks: Float32Array[] = [];
-    node.onaudioprocess = (e) => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    const tracker =
+      opts?.onSilence && opts.silenceMs
+        ? createSilenceTracker({ silenceMs: opts.silenceMs, onSilence: opts.onSilence })
+        : null;
+    node.onaudioprocess = (e) => {
+      const data = e.inputBuffer.getChannelData(0);
+      chunks.push(new Float32Array(data));
+      tracker?.feed(data, performance.now());
+    };
     source.connect(node);
     node.connect(ctx.destination);
     const limit = setTimeout(onLimit, MAX_RECORDING_SECONDS * 1000);

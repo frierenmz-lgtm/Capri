@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart, type UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
+  AudioLines,
   Check,
   Copy,
   Download,
@@ -38,7 +39,7 @@ import { ShareDialog } from "@/components/share-dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { authHeaders, speak, startRecording, transcribe, type Recording } from "@/lib/voice";
-import { MAX_RECORDING_SECONDS } from "@/lib/voice-limits";
+import { MAX_RECORDING_SECONDS, VOICE_SILENCE_MS } from "@/lib/voice-limits";
 import {
   Conversation,
   ConversationContent,
@@ -105,6 +106,7 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
   const busy = status === "submitted" || status === "streaming";
   const [editingId, setEditingId] = useState<string | null>(null);
   const speaker = useSpeaker();
+  const voice = useVoiceMode({ sendMessage, status, messages, stop, stopSpeaker: speaker.stop });
 
   useEffect(() => {
     if (!busy) inputRef.current?.focus();
@@ -250,6 +252,9 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
       </Conversation>
       <div className="mx-auto w-full max-w-3xl p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {speaker.speakingId && <ReadingBar loading={speaker.loading} onStop={speaker.stop} />}
+        {voice.phase !== "off" ? (
+          <VoicePanel phase={voice.phase} onEnd={voice.end} />
+        ) : (
         <PromptInput
           accept={ATTACH_ACCEPT}
           multiple
@@ -283,10 +288,18 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
             <div className="flex items-center gap-1">
               <AttachButton />
               <MicButton inputRef={inputRef} disabled={busy} />
+              <PromptInputButton
+                onClick={() => void voice.start()}
+                disabled={busy}
+                aria-label="Hablar con Capri"
+              >
+                <AudioLines className="size-5" />
+              </PromptInputButton>
             </div>
             <PromptInputSubmit status={status} onStop={stop} />
           </PromptInputFooter>
         </PromptInput>
+        )}
       </div>
     </div>
   );
@@ -625,6 +638,139 @@ function CopyAction({ text }: { text: string }) {
   );
 }
 
+type VoicePhase = "off" | "listening" | "transcribing" | "thinking" | "speaking";
+
+/**
+ * Hands-free conversation: listen until the user goes quiet, transcribe, send,
+ * read the reply aloud, and listen again. Everything runs through refs, so the
+ * async callbacks stay valid across renders; `alive` is the single kill switch.
+ */
+function useVoiceMode({
+  sendMessage,
+  status,
+  messages,
+  stop,
+  stopSpeaker,
+}: {
+  sendMessage: (message: { text: string }) => void;
+  status: string;
+  messages: UIMessage[];
+  stop: () => void;
+  stopSpeaker: () => void;
+}) {
+  const [phase, setPhase] = useState<VoicePhase>("off");
+  const alive = useRef(false);
+  const rec = useRef<Recording | null>(null);
+  const tts = useRef<AbortController | null>(null);
+  const spokenId = useRef<string | null>(null);
+  const latest = useRef({ sendMessage, status, messages, stop });
+  latest.current = { sendMessage, status, messages, stop };
+
+  const end = useCallback(() => {
+    alive.current = false;
+    rec.current?.cancel();
+    rec.current = null;
+    tts.current?.abort();
+    tts.current = null;
+    spokenId.current = null;
+    if (latest.current.status === "submitted" || latest.current.status === "streaming") latest.current.stop();
+    setPhase("off");
+  }, []);
+
+  useEffect(() => end, [end]);
+
+  async function listen() {
+    if (!alive.current) return;
+    setPhase("listening");
+    try {
+      const r = await startRecording(() => void finish(), {
+        silenceMs: VOICE_SILENCE_MS,
+        onSilence: () => void finish(),
+      });
+      if (!alive.current) {
+        r.cancel();
+        return;
+      }
+      rec.current = r;
+    } catch (e) {
+      if (!alive.current) return;
+      toast.error((e as Error).message || "No se pudo usar el micrófono.");
+      end();
+    }
+  }
+
+  async function finish() {
+    const r = rec.current;
+    rec.current = null;
+    if (!r || !alive.current) return;
+    setPhase("transcribing");
+    try {
+      const file = await r.stop();
+      const text = await transcribe(file, () => {});
+      if (!alive.current) return;
+      if (!text.trim()) {
+        await listen();
+        return;
+      }
+      setPhase("thinking");
+      latest.current.sendMessage({ text });
+    } catch (e) {
+      if (!alive.current) return;
+      toast.error((e as Error).message || "No se pudo transcribir el audio.");
+      await listen();
+    }
+  }
+
+  async function speakReply(text: string) {
+    if (!alive.current) return;
+    setPhase("speaking");
+    const c = new AbortController();
+    tts.current = c;
+    try {
+      await speak(text, c.signal);
+    } catch {
+      /* a failed read-aloud just ends the turn */
+    } finally {
+      if (tts.current === c) tts.current = null;
+    }
+    if (!alive.current) return;
+    // Small pause so the speaker tail isn't picked up by the microphone.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (!alive.current) return;
+    await listen();
+  }
+
+  async function start() {
+    if (alive.current) return;
+    stopSpeaker();
+    alive.current = true;
+    spokenId.current = null;
+    await listen();
+  }
+
+  // The reply finished streaming: read it aloud, then listen again.
+  useEffect(() => {
+    if (!alive.current || phase !== "thinking") return;
+    if (status === "error") {
+      toast.error("Capri no pudo responder. Escuchando de nuevo…");
+      void listen();
+      return;
+    }
+    if (status !== "ready") return;
+    const last = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!last || spokenId.current === last.id) return;
+    spokenId.current = last.id;
+    const text = textOf(last);
+    if (!text) {
+      void listen();
+      return;
+    }
+    void speakReply(text);
+  }, [status, messages, phase]);
+
+  return { phase, start, end };
+}
+
 /** One reply read aloud at a time; tapping again (or another reply) stops it. */
 function useSpeaker() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
@@ -761,6 +907,33 @@ function MicButton({ inputRef, disabled }: { inputRef: RefObject<HTMLTextAreaEle
     >
       <Mic className="size-5" />
     </PromptInputButton>
+  );
+}
+
+function VoicePanel({ phase, onEnd }: { phase: Exclude<VoicePhase, "off">; onEnd: () => void }) {
+  const label =
+    phase === "listening"
+      ? "Escuchando… habla cuando quieras"
+      : phase === "transcribing"
+        ? "Transcribiendo…"
+        : phase === "thinking"
+          ? "Capri está pensando…"
+          : "Capri está hablando…";
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border bg-card p-4" role="status">
+      <span className="relative flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground">
+        {phase === "listening" && (
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-40" />
+        )}
+        <AudioLines className="relative size-6" />
+      </span>
+      <p className="text-sm text-muted-foreground" aria-live="polite">
+        {label}
+      </p>
+      <Button type="button" size="lg" className="h-11 gap-2 rounded-full px-6" onClick={onEnd}>
+        <Square className="size-4 fill-current" /> Terminar
+      </Button>
+    </div>
   );
 }
 
