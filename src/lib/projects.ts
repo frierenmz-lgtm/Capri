@@ -69,9 +69,11 @@ export const projectThreadsQuery = (projectId: string) =>
   });
 
 export async function createProject(name: string): Promise<string> {
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) throw new Error("Inicia sesión para crear proyectos.");
   const { data, error } = await supabase
     .from("projects")
-    .insert({ name: name.trim().slice(0, MAX_PROJECT_NAME) })
+    .insert({ user_id: auth.user.id, name: name.trim().slice(0, MAX_PROJECT_NAME) })
     .select("id")
     .single();
   if (error) throw error;
