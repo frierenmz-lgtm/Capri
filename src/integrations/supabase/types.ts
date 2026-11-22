@@ -112,69 +112,6 @@ export type Database = {
         }
         Relationships: []
       }
-      reminders: {
-        Row: {
-          created_at: string
-          due_at: string
-          id: string
-          sent_at: string | null
-          status: string
-          text: string
-          thread_id: string | null
-          timezone: string
-          user_id: string
-        }
-        Insert: {
-          created_at?: string
-          due_at: string
-          id?: string
-          sent_at?: string | null
-          status?: string
-          text: string
-          thread_id?: string | null
-          timezone?: string
-          user_id: string
-        }
-        Update: {
-          created_at?: string
-          due_at?: string
-          id?: string
-          sent_at?: string | null
-          status?: string
-          text?: string
-          thread_id?: string | null
-          timezone?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
-      push_subscriptions: {
-        Row: {
-          auth: string
-          created_at: string
-          endpoint: string
-          id: string
-          p256dh: string
-          user_id: string
-        }
-        Insert: {
-          auth: string
-          created_at?: string
-          endpoint: string
-          id?: string
-          p256dh: string
-          user_id: string
-        }
-        Update: {
-          auth?: string
-          created_at?: string
-          endpoint?: string
-          id?: string
-          p256dh?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
     }
     Views: {
       [_ in never]: never
