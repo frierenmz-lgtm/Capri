@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart, type UIMessage } from "ai";
@@ -9,6 +9,7 @@ import {
   Copy,
   Download,
   FileText,
+  Folder,
   Globe,
   Loader2,
   Mic,
@@ -22,7 +23,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { messagesQuery, saveThreadInstructions, saveThreadModel, threadQuery } from "@/lib/threads";
+import { messagesQuery, moveThreadToProject, saveThreadInstructions, saveThreadModel, threadQuery } from "@/lib/threads";
+import { projectsQuery } from "@/lib/projects";
 import { CHAT_MODELS, resolveChatModel } from "@/lib/models";
 import {
   ATTACH_ACCEPT,
@@ -37,6 +39,14 @@ import { CapriMark } from "@/components/capri-mark";
 import { InstructionsDialog } from "@/components/instructions-dialog";
 import { ShareDialog } from "@/components/share-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { authHeaders, speak, startRecording, transcribe, type Recording } from "@/lib/voice";
 import { MAX_RECORDING_SECONDS, VOICE_SILENCE_MS } from "@/lib/voice-limits";
@@ -308,10 +318,79 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
 function ThreadBar({ threadId, messages }: { threadId: string; messages: UIMessage[] }) {
   const queryClient = useQueryClient();
   const { data: thread } = useQuery(threadQuery(threadId));
+  const { data: projects = [] } = useQuery(projectsQuery);
+  const [projectOpen, setProjectOpen] = useState(false);
   const value = thread?.custom_instructions ?? "";
+  const project = projects.find((p) => p.id === thread?.project_id);
+
+  async function pickProject(next: string | null) {
+    try {
+      await moveThreadToProject(threadId, next);
+      await queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
+      await queryClient.invalidateQueries({ queryKey: ["threads"] });
+      await queryClient.invalidateQueries({ queryKey: ["project-threads"] });
+      setProjectOpen(false);
+    } catch {
+      toast.error("No se pudo mover la conversación.");
+    }
+  }
+
   return (
     <div className="flex items-center gap-2 border-b px-4 py-2">
       <p className="min-w-0 flex-1 truncate text-sm font-medium">{thread?.title ?? ""}</p>
+      {project && (
+        <Link
+          to="/chat/proyecto/$projectId"
+          params={{ projectId: project.id }}
+          className="hidden items-center gap-1 truncate rounded-full bg-sidebar-accent px-2.5 py-1 text-xs text-muted-foreground sm:inline-flex"
+        >
+          <Folder className="size-3.5 shrink-0" />
+          <span className="truncate">{project.name}</span>
+        </Link>
+      )}
+      <Dialog open={projectOpen} onOpenChange={setProjectOpen}>
+        <DialogTrigger asChild>
+          <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" disabled={!thread}>
+            <Folder className="size-4" />
+            <span className="hidden sm:inline">Proyecto</span>
+          </Button>
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Proyecto de esta conversación</DialogTitle>
+            <DialogDescription>
+              Las conversaciones de un proyecto usan sus instrucciones y sus archivos como contexto.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => void pickProject(null)}
+              className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-sidebar-accent/60"
+            >
+              Sin proyecto
+              {!thread?.project_id && <span className="ml-2 text-xs text-primary">Actual</span>}
+            </button>
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => void pickProject(p.id)}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-sidebar-accent/60"
+              >
+                <Folder className="size-4 text-muted-foreground" />
+                <span className="flex-1 truncate">{p.name}</span>
+                {thread?.project_id === p.id && <span className="text-xs text-primary">Actual</span>}
+              </button>
+            ))}
+            {projects.length === 0 && (
+              <p className="px-3 py-2 text-sm text-muted-foreground">
+                No tienes proyectos todavía. Créalo desde la barra lateral.
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       <select
         value={resolveChatModel(thread?.model)}
         disabled={!thread}

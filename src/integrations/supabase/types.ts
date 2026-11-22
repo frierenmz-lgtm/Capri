@@ -59,6 +59,7 @@ export type Database = {
           id: string
           model: string
           pinned: boolean
+          project_id: string | null
           share_id: string | null
           title: string
           updated_at: string
@@ -70,6 +71,7 @@ export type Database = {
           id?: string
           model?: string
           pinned?: boolean
+          project_id?: string | null
           share_id?: string | null
           title?: string
           updated_at?: string
@@ -81,12 +83,21 @@ export type Database = {
           id?: string
           model?: string
           pinned?: boolean
+          project_id?: string | null
           share_id?: string | null
           title?: string
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "threads_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       capri_memories: {
         Row: { id: string; user_id: string; category: string; content: string; created_at: string; updated_at: string; importance: number; source: string; expires_at: string | null }
@@ -114,6 +125,71 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      projects: {
+        Row: {
+          created_at: string
+          id: string
+          instructions: string
+          name: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          instructions?: string
+          name: string
+          updated_at?: string
+          user_id?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          instructions?: string
+          name?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      project_files: {
+        Row: {
+          created_at: string
+          id: string
+          media_type: string
+          name: string
+          project_id: string
+          storage_path: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          media_type?: string
+          name: string
+          project_id: string
+          storage_path: string
+          user_id?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          media_type?: string
+          name?: string
+          project_id?: string
+          storage_path?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_files_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {

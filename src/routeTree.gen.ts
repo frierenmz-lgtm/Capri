@@ -23,6 +23,7 @@ import { Route as DotlovableOauthConsentRouteImport } from './routes/[.]lovable.
 import { Route as AuthenticatedChatIndexRouteImport } from './routes/_authenticated/chat.index'
 import { Route as AuthenticatedChatThreadIdRouteImport } from './routes/_authenticated/chat.$threadId'
 import { Route as AuthenticatedChatNuevoRouteImport } from './routes/_authenticated/chat.nuevo'
+import { Route as AuthenticatedChatProyectoProjectIdRouteImport } from './routes/_authenticated/chat.proyecto.$projectId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -95,6 +96,12 @@ const AuthenticatedChatNuevoRoute = AuthenticatedChatNuevoRouteImport.update({
   path: '/nuevo',
   getParentRoute: () => AuthenticatedChatRoute,
 } as any)
+const AuthenticatedChatProyectoProjectIdRoute =
+  AuthenticatedChatProyectoProjectIdRouteImport.update({
+    id: '/proyecto/$projectId',
+    path: '/proyecto/$projectId',
+    getParentRoute: () => AuthenticatedChatRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -110,6 +117,7 @@ export interface FileRoutesByFullPath {
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
   '/chat/nuevo': typeof AuthenticatedChatNuevoRoute
   '/chat/': typeof AuthenticatedChatIndexRoute
+  '/chat/proyecto/$projectId': typeof AuthenticatedChatProyectoProjectIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -124,6 +132,7 @@ export interface FileRoutesByTo {
   '/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
   '/chat/nuevo': typeof AuthenticatedChatNuevoRoute
   '/chat': typeof AuthenticatedChatIndexRoute
+  '/chat/proyecto/$projectId': typeof AuthenticatedChatProyectoProjectIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -141,6 +150,7 @@ export interface FileRoutesById {
   '/_authenticated/chat/$threadId': typeof AuthenticatedChatThreadIdRoute
   '/_authenticated/chat/nuevo': typeof AuthenticatedChatNuevoRoute
   '/_authenticated/chat/': typeof AuthenticatedChatIndexRoute
+  '/_authenticated/chat/proyecto/$projectId': typeof AuthenticatedChatProyectoProjectIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -158,6 +168,7 @@ export interface FileRouteTypes {
     | '/chat/$threadId'
     | '/chat/nuevo'
     | '/chat/'
+    | '/chat/proyecto/$projectId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -172,6 +183,7 @@ export interface FileRouteTypes {
     | '/chat/$threadId'
     | '/chat/nuevo'
     | '/chat'
+    | '/chat/proyecto/$projectId'
   id:
     | '__root__'
     | '/'
@@ -188,6 +200,7 @@ export interface FileRouteTypes {
     | '/_authenticated/chat/$threadId'
     | '/_authenticated/chat/nuevo'
     | '/_authenticated/chat/'
+    | '/_authenticated/chat/proyecto/$projectId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -303,6 +316,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedChatNuevoRouteImport
       parentRoute: typeof AuthenticatedChatRoute
     }
+    '/_authenticated/chat/proyecto/$projectId': {
+      id: '/_authenticated/chat/proyecto/$projectId'
+      path: '/proyecto/$projectId'
+      fullPath: '/chat/proyecto/$projectId'
+      preLoaderRoute: typeof AuthenticatedChatProyectoProjectIdRouteImport
+      parentRoute: typeof AuthenticatedChatRoute
+    }
   }
 }
 
@@ -310,12 +330,15 @@ interface AuthenticatedChatRouteChildren {
   AuthenticatedChatThreadIdRoute: typeof AuthenticatedChatThreadIdRoute
   AuthenticatedChatNuevoRoute: typeof AuthenticatedChatNuevoRoute
   AuthenticatedChatIndexRoute: typeof AuthenticatedChatIndexRoute
+  AuthenticatedChatProyectoProjectIdRoute: typeof AuthenticatedChatProyectoProjectIdRoute
 }
 
 const AuthenticatedChatRouteChildren: AuthenticatedChatRouteChildren = {
   AuthenticatedChatThreadIdRoute: AuthenticatedChatThreadIdRoute,
   AuthenticatedChatNuevoRoute: AuthenticatedChatNuevoRoute,
   AuthenticatedChatIndexRoute: AuthenticatedChatIndexRoute,
+  AuthenticatedChatProyectoProjectIdRoute:
+    AuthenticatedChatProyectoProjectIdRoute,
 }
 
 const AuthenticatedChatRouteWithChildren =

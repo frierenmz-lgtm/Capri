@@ -1,10 +1,11 @@
 import { createFileRoute, Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Loader2, Menu, Pin, Plus, Search, Settings, Sparkles, Trash2, X } from "lucide-react";
+import { Loader2, Folder, FolderPlus, Menu, Pin, Plus, Search, Settings, Sparkles, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { createThread, deleteThread, saveDefaultInstructions, saveThreadPinned, settingsQuery, splitPinned, threadsQuery, type Thread } from "@/lib/threads";
+import { createProject, deleteProject, projectsQuery } from "@/lib/projects";
 import { MIN_SEARCH, matchesTerm, messageSearchQuery, splitHighlight, stripMarkdown } from "@/lib/search";
 import { CapriMark } from "@/components/capri-mark";
 import { InstructionsDialog } from "@/components/instructions-dialog";
@@ -48,8 +49,12 @@ function ChatLayout() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const params = useParams({ strict: false }) as { threadId?: string };
+  const params = useParams({ strict: false }) as { threadId?: string; projectId?: string };
   const { data: threads = [] } = useQuery(threadsQuery);
+  const { data: projects = [] } = useQuery(projectsQuery);
+  const [newProject, setNewProject] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState<string | null>(null);
   const { data: settings } = useQuery(settingsQuery);
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
@@ -114,6 +119,37 @@ function ChatLayout() {
     },
     execute: ({ id }: { id: string }) => runWebMCPTool("open_conversation", () => openThread(id)),
   });
+
+  async function createNewProject() {
+    const name = newProject.trim();
+    if (!name) return;
+    try {
+      const id = await createProject(name);
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setNewProject("");
+      setCreatingProject(false);
+      setOpen(false);
+      navigate({ to: "/chat/proyecto/$projectId", params: { projectId: id } });
+    } catch {
+      toast.error("No se pudo crear el proyecto.");
+    }
+  }
+
+  async function removeProject(id: string) {
+    if (confirmDeleteProject !== id) {
+      setConfirmDeleteProject(id);
+      return;
+    }
+    try {
+      await deleteProject(id);
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      await queryClient.invalidateQueries({ queryKey: ["threads"] });
+      setConfirmDeleteProject(null);
+      if (params.projectId === id) navigate({ to: "/chat", replace: true });
+    } catch {
+      toast.error("No se pudo borrar el proyecto.");
+    }
+  }
 
   async function newThread() {
     try {
@@ -226,6 +262,69 @@ function ChatLayout() {
             aria-label="Buscar conversaciones"
             className="w-full rounded-full border bg-background py-2 pl-9 pr-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
+        </div>
+        <div className="px-3 pt-3">
+          <p className="px-3 pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Proyectos</p>
+          {projects.map((p) => (
+            <div
+              key={p.id}
+              className={cn(
+                "group flex items-center rounded-lg text-sm",
+                params.projectId === p.id ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
+              )}
+            >
+              <Link
+                to="/chat/proyecto/$projectId"
+                params={{ projectId: p.id }}
+                onClick={() => setOpen(false)}
+                className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2"
+              >
+                <Folder className="size-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{p.name}</span>
+              </Link>
+              <button
+                type="button"
+                onClick={() => void removeProject(p.id)}
+                aria-label="Borrar proyecto"
+                className="mr-1 rounded p-1.5 text-muted-foreground opacity-60 hover:text-destructive group-hover:opacity-100"
+              >
+                {confirmDeleteProject === p.id ? <span className="text-xs">¿Borrar?</span> : <Trash2 className="size-4" />}
+              </button>
+            </div>
+          ))}
+          {creatingProject ? (
+            <form
+              className="mt-1 flex items-center gap-1 px-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void createNewProject();
+              }}
+            >
+              <input
+                autoFocus
+                value={newProject}
+                onChange={(e) => setNewProject(e.target.value)}
+                placeholder="Nombre del proyecto"
+                aria-label="Nombre del proyecto"
+                maxLength={80}
+                className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <Button type="submit" size="sm" disabled={!newProject.trim()}>
+                Crear
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setCreatingProject(false)}>
+                <X className="size-4" />
+              </Button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setCreatingProject(true)}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-sidebar-accent/60"
+            >
+              <FolderPlus className="size-4" /> Nuevo proyecto
+            </button>
+          )}
         </div>
         <nav className="mt-3 flex-1 space-y-1 overflow-y-auto px-3">
           {q && visible.length > 0 && (

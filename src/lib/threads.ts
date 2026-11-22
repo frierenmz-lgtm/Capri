@@ -3,7 +3,7 @@ import type { UIMessage } from "ai";
 import { supabase } from "@/integrations/supabase/client";
 import type { ChatModelId } from "./models";
 
-export type Thread = { id: string; title: string; updated_at: string; pinned: boolean };
+export type Thread = { id: string; title: string; updated_at: string; pinned: boolean; project_id: string | null };
 
 /** Splits a thread list (already ordered pinned-first) into its pinned group and the rest, keeping each group's order. */
 export function splitPinned(threads: Thread[]): { pinned: Thread[]; rest: Thread[] } {
@@ -17,7 +17,7 @@ export const threadsQuery = queryOptions({
   queryFn: async (): Promise<Thread[]> => {
     const { data, error } = await supabase
       .from("threads")
-      .select("id,title,updated_at,pinned")
+      .select("id,title,updated_at,pinned,project_id")
       .order("pinned", { ascending: false })
       .order("updated_at", { ascending: false });
     if (error) throw error;
@@ -44,10 +44,19 @@ export const messagesQuery = (threadId: string) =>
     staleTime: Infinity,
   });
 
-export async function createThread(): Promise<string> {
-  const { data, error } = await supabase.from("threads").insert({}).select("id").single();
+export async function createThread(projectId?: string | null): Promise<string> {
+  const { data, error } = await supabase
+    .from("threads")
+    .insert({ project_id: projectId ?? null })
+    .select("id")
+    .single();
   if (error) throw error;
   return data.id;
+}
+
+export async function moveThreadToProject(threadId: string, projectId: string | null) {
+  const { error } = await supabase.from("threads").update({ project_id: projectId }).eq("id", threadId);
+  if (error) throw error;
 }
 
 export async function deleteThread(id: string) {
@@ -61,7 +70,7 @@ export const threadQuery = (threadId: string) =>
     queryFn: async () => {
       const { data, error } = await supabase
         .from("threads")
-        .select("id,title,custom_instructions,share_id,model")
+        .select("id,title,custom_instructions,share_id,model,project_id")
         .eq("id", threadId)
         .maybeSingle();
       if (error) throw error;

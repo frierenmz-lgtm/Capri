@@ -7,6 +7,7 @@ import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
 import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from "./web-search";
 import { DEFAULT_CHAT_MODEL, resolveChatModel } from "./models";
+import { budgetProjectTexts, pickFallbackInstructions, projectFileText, selectProjectFiles } from "./project-context";
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -23,16 +24,37 @@ export async function handleChat(request: Request) {
   const { messages, threadId } = body;
 
   const [{ data: thread }, { data: settings }, { data: memoryRows, error: memoryError }] = await Promise.all([
-    supabase.from("threads").select("id,title,custom_instructions,model").eq("id", threadId).maybeSingle(),
+    supabase.from("threads").select("id,title,custom_instructions,model,project_id").eq("id", threadId).maybeSingle(),
     supabase.from("user_settings").select("default_instructions,memory_auto_enabled").eq("user_id", userId).maybeSingle(),
     supabase.from("capri_memories").select("id,content,category,updated_at,importance,expires_at").eq("user_id", userId).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).order("importance", { ascending: false }).order("updated_at", { ascending: false }).limit(50),
   ]);
   if (!thread) return json(404, "Conversación no encontrada.");
   if (memoryError) console.error("load capri memories", memoryError);
+  // A thread in a project uses the project's instructions (unless the thread has
+  // its own) and reads the project's files as context on every turn.
+  const project = thread.project_id
+    ? (
+        await supabase
+          .from("projects")
+          .select("id,name,instructions")
+          .eq("id", thread.project_id)
+          .maybeSingle()
+      ).data
+    : null;
+  const projectFileRows = project
+    ? (
+        await supabase
+          .from("project_files")
+          .select("id,name,storage_path,media_type,created_at")
+          .eq("project_id", project.id)
+          .order("created_at", { ascending: false })
+      ).data ?? []
+    : [];
+  const fallbackInstructions = pickFallbackInstructions(project?.instructions, settings?.default_instructions);
   const latestUserText = messages.filter((m) => m.role === "user").slice(-1)[0]?.parts
     .map((part) => part.type === "text" ? part.text : "").join(" ") ?? "";
   const memories = selectRelevantMemories(memoryRows ?? [], latestUserText);
-  const system = buildSystemPrompt(thread.custom_instructions, settings?.default_instructions, memories);
+  const system = buildSystemPrompt(thread.custom_instructions, fallbackInstructions, memories);
 
   const last = messages[messages.length - 1]!;
   if (last.role === "user") {
@@ -60,6 +82,26 @@ export async function handleChat(request: Request) {
     return json(400, (e as Error).message || "No se pudo leer un archivo adjunto.");
   }
 
+  // Project files ride along as a leading message (never saved): the model sees
+  // them on every turn of a thread that belongs to a project.
+  let contextMessages: UIMessage[] = modelMessages;
+  if (project) {
+    const { parts, omitted, cut } = await projectContextParts(supabase, userId, projectFileRows);
+    if (parts.length > 0) {
+      const note = [
+        `Archivos del proyecto «${project.name}». Úsalos como contexto para responder.`,
+        omitted > 0 ? `Se incluyen los ${parts.length} más recientes; el proyecto tiene ${omitted} más.` : "",
+        cut ? "Algunos archivos se recortaron por longitud." : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      contextMessages = [
+        { id: "project-files", role: "user", parts: [{ type: "text", text: note }, ...parts] },
+        ...modelMessages,
+      ];
+    }
+  }
+
   const today = new Date().toLocaleDateString("es-MX", {
     weekday: "long",
     year: "numeric",
@@ -75,8 +117,8 @@ export async function handleChat(request: Request) {
 
   const result = streamText({
     model: provider(resolveChatModel(thread.model)),
-    instructions: `${system}\n\nHoy es ${today} y son las ${now} (hora de Ciudad de México, UTC-06:00).`,
-    messages: await convertToModelMessages(modelMessages),
+    instructions: `${system}\n\nHoy es ${today} y son las ${now} (hora de Ciudad de México, UTC-06:00).${project ? `\nEstás en el proyecto «${project.name}».` : ""}`,
+    messages: await convertToModelMessages(contextMessages),
     // Web search via Tavily; at most two searches per turn (one credit each on the free plan).
     tools: { [WEB_SEARCH_TOOL_NAME]: createWebSearchTool(process.env["TAVILY_API_KEY"]) },
     stopWhen: stepCountIs(3),
@@ -217,6 +259,45 @@ async function readBoundedBody(request: Request, maxBytes: number): Promise<stri
     offset += chunk.byteLength;
   }
   return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Downloads a project's files and turns them into model parts: text files become
+ * text blocks (sharing one character budget), images and PDFs become inline data.
+ * Files that can't be read are skipped; the caller notes what was left out.
+ */
+async function projectContextParts(
+  supabase: UserClient,
+  userId: string,
+  files: { name: string; storage_path: string; media_type: string; created_at: string }[],
+): Promise<{ parts: UIMessage["parts"]; omitted: number; cut: boolean }> {
+  const selected = selectProjectFiles(files);
+  const texts: { name: string; text: string }[] = [];
+  const media: UIMessage["parts"][number][] = [];
+  for (const file of selected) {
+    if (!ownsImagePath(file.storage_path, userId)) continue;
+    const kind = attachmentKind(file.media_type, file.name);
+    if (!kind) continue;
+    const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(file.storage_path);
+    if (error || !data) continue;
+    if (kind === "text") {
+      texts.push({ name: file.name, text: await data.text() });
+    } else {
+      const bytes = new Uint8Array(await data.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      const mediaType = kind === "pdf" ? "application/pdf" : file.media_type;
+      media.push({ type: "file", mediaType, filename: file.name, url: `data:${mediaType};base64,${btoa(bin)}` });
+    }
+  }
+  const budgeted = budgetProjectTexts(texts);
+  const parts: UIMessage["parts"] = [
+    ...budgeted.filter((t) => t.text).map((t) => ({ type: "text" as const, text: projectFileText(t.name, t.text) })),
+    ...media,
+  ];
+  return { parts, omitted: files.length - selected.length, cut: budgeted.some((t) => t.cut) };
 }
 
 /**
