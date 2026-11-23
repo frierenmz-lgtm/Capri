@@ -52,7 +52,8 @@ function QuizRunner() {
   if (data && !quiz) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-10">
-        <p className="text-lg font-medium">Cuestionario no encontrado.</p>
+        <Mascot state="confused" className="w-24" />
+        <p className="mt-4 text-lg font-medium">Cuestionario no encontrado.</p>
         <Link to="/estudio" className="mt-2 inline-block text-sm text-primary">
           Volver a modo estudio
         </Link>
@@ -163,7 +164,7 @@ function Results({
         <ArrowLeft className="size-4" /> Modo estudio
       </Link>
       <h1 className="mt-4 text-xl font-semibold">{topic}</h1>
-      <Mascot className="mt-4 w-28" />
+      <Mascot state="success" className="mt-4 w-28" />
       <p className="mt-2 text-3xl font-bold">
         {correct} de {total}
       </p>

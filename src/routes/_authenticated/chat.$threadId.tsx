@@ -145,7 +145,7 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
         <ConversationContent className="mx-auto w-full max-w-3xl">
           {messages.length === 0 ? (
             <ConversationEmptyState
-              icon={<Mascot className="w-24" />}
+              icon={<Mascot state="idle" className="w-24" />}
               title="Hola, soy Capri"
               description="Pregúntame lo que quieras. Respondo breve y en español."
             />

@@ -1,16 +1,35 @@
 import { cn } from "@/lib/utils";
 
+export type MascotState = "idle" | "success" | "confused" | "alert" | "sleep";
+
+const STATE_SRC: Record<MascotState, string> = {
+  idle: "/kiri-idle.png",
+  success: "/kiri-success.png",
+  confused: "/kiri-confused.png",
+  alert: "/kiri-alert.png",
+  sleep: "/kiri-sleep.png",
+};
+
 /**
- * Capri's mascot: Frieren's own drawing, cropped to the character.
- * The image background is a flat light gray (#d0cbd1); the same color is
- * used as the backdrop so the rectangle blends into the page.
+ * Kiri, Capri's mascot. Without a state it shows the full body
+ * (public/mascot.png); with a state it shows the matching UI cutout
+ * (public/kiri-<state>.png), rendered as a circle.
  */
-export function Mascot({ className }: { className?: string }) {
+export function Mascot({ state, className }: { state?: MascotState; className?: string }) {
+  if (!state) {
+    return (
+      <img
+        src="/mascot.png"
+        alt="Kiri, la mascota de Capri"
+        className={cn("rounded-3xl bg-[#d6d3d6]", className)}
+      />
+    );
+  }
   return (
     <img
-      src="/mascot.png"
-      alt="Mascota de Capri"
-      className={cn("rounded-3xl bg-[#d0cbd1]", className)}
+      src={STATE_SRC[state]}
+      alt="Kiri, la mascota de Capri"
+      className={cn("rounded-full", className)}
     />
   );
 }
