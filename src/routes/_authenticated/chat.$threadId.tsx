@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart, type UIMessage } from "ai";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   AudioLines,
   Check,
@@ -83,6 +83,135 @@ function ThreadPage() {
   return <ChatWindow key={threadId} threadId={threadId} initialMessages={data} />;
 }
 
+/**
+ * One chat message row, memoized so a streaming token only re-renders the
+ * message being written instead of the whole history. The row also opts
+ * into content-visibility so off-screen messages stay cheap to scroll past
+ * on mid-range phones.
+ */
+const ChatMessageRow = memo(function ChatMessageRow({
+  m,
+  streaming,
+  editing,
+  busy,
+  speaking,
+  speakerLoading,
+  isLastAssistant,
+  onEdit,
+  onSave,
+  onToggleSpeak,
+  onRetry,
+}: {
+  m: UIMessage;
+  streaming: boolean;
+  editing: boolean;
+  busy: boolean;
+  speaking: boolean;
+  speakerLoading: boolean;
+  isLastAssistant: boolean;
+  onEdit: (id: string | null) => void;
+  onSave: (m: UIMessage, text: string) => void;
+  onToggleSpeak: (id: string, text: string) => void;
+  onRetry: (messageId?: string) => void;
+}) {
+  const text = textOf(m);
+  if (editing) {
+    return (
+      <EditMessage
+        initial={text}
+        hasImages={m.parts.some((p) => p.type === "file")}
+        onCancel={() => onEdit(null)}
+        onSave={(next) => onSave(m, next)}
+      />
+    );
+  }
+  return (
+    <Message
+      from={m.role}
+      className="[content-visibility:auto] [contain-intrinsic-size:auto_600px]"
+    >
+      <MessageContent>
+        {m.parts.some((p) => p.type === "file") && (
+          <div className="flex flex-wrap gap-2">
+            {m.parts.map((part, i) =>
+              part.type === "file" ? <SavedAttachment key={i} part={part} /> : null,
+            )}
+          </div>
+        )}
+        {streaming &&
+          m.parts.some((p) => p.type === "tool-web_search" && p.state !== "output-available") && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Globe className="size-4 animate-pulse" /> Buscando en la web…
+            </div>
+          )}
+        {m.parts.map((part, i) =>
+          part.type === "text" ? (
+            m.role === "user" ? (
+              <p key={i} className="whitespace-pre-wrap">
+                {part.text}
+              </p>
+            ) : (
+              <MessageResponse key={i}>{part.text}</MessageResponse>
+            )
+          ) : null,
+        )}
+        {m.role === "assistant" && <Sources parts={m.parts} />}
+      </MessageContent>
+      {!streaming && (
+        <MessageActions
+          className={
+            m.role === "user"
+              ? "ml-auto transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
+              : "-ml-2"
+          }
+        >
+          {m.role === "user" ? (
+            <MessageAction
+              tooltip="Editar"
+              disabled={busy}
+              onClick={() => onEdit(m.id)}
+              className="size-8 text-muted-foreground"
+            >
+              <Pencil className="size-4" />
+            </MessageAction>
+          ) : (
+            text && (
+              <>
+                <CopyAction text={text} />
+                <MessageAction
+                  tooltip={speaking ? "Detener" : "Escuchar"}
+                  onClick={() => onToggleSpeak(m.id, text)}
+                  className="size-8 text-muted-foreground"
+                >
+                  {speaking ? (
+                    speakerLoading ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Square className="size-3.5 fill-current" />
+                    )
+                  ) : (
+                    <Volume2 className="size-4" />
+                  )}
+                </MessageAction>
+                {isLastAssistant && (
+                  <MessageAction
+                    tooltip="Otra respuesta"
+                    disabled={busy}
+                    onClick={() => onRetry(m.id)}
+                    className="size-8 text-muted-foreground"
+                  >
+                    <RefreshCw className="size-4" />
+                  </MessageAction>
+                )}
+              </>
+            )
+          )}
+        </MessageActions>
+      )}
+    </Message>
+  );
+});
+
 function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMessages: UIMessage[] }) {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -125,17 +254,23 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
   const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
   const lastIsUser = messages.at(-1)?.role === "user";
 
-  function saveEdit(m: UIMessage, text: string) {
-    const files = m.parts.filter((p): p is FileUIPart => p.type === "file");
-    setEditingId(null);
-    speaker.stop();
-    void sendMessage(text ? { text, files, messageId: m.id } : { files, messageId: m.id });
-  }
+  const saveEdit = useCallback(
+    (m: UIMessage, text: string) => {
+      const files = m.parts.filter((p): p is FileUIPart => p.type === "file");
+      setEditingId(null);
+      speaker.stop();
+      void sendMessage(text ? { text, files, messageId: m.id } : { files, messageId: m.id });
+    },
+    [sendMessage, speaker.stop],
+  );
 
-  function retry(messageId?: string) {
-    speaker.stop();
-    void regenerate(messageId ? { messageId } : undefined);
-  }
+  const retry = useCallback(
+    (messageId?: string) => {
+      speaker.stop();
+      void regenerate(messageId ? { messageId } : undefined);
+    },
+    [regenerate, speaker.stop],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -149,103 +284,22 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
               description="Pregúntame lo que quieras. Respondo breve y en español."
             />
           ) : (
-            messages.map((m) => {
-              const text = textOf(m);
-              const streamingThis = status === "streaming" && m.id === messages.at(-1)?.id;
-              if (editingId === m.id) {
-                return (
-                  <EditMessage
-                    key={m.id}
-                    initial={text}
-                    hasImages={m.parts.some((p) => p.type === "file")}
-                    onCancel={() => setEditingId(null)}
-                    onSave={(next) => saveEdit(m, next)}
-                  />
-                );
-              }
-              return (
-                <Message key={m.id} from={m.role}>
-                  <MessageContent>
-                    {m.parts.some((p) => p.type === "file") && (
-                      <div className="flex flex-wrap gap-2">
-                        {m.parts.map((part, i) =>
-                          part.type === "file" ? <SavedAttachment key={i} part={part} /> : null,
-                        )}
-                      </div>
-                    )}
-                    {streamingThis &&
-                      m.parts.some((p) => p.type === "tool-web_search" && p.state !== "output-available") && (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Globe className="size-4 animate-pulse" /> Buscando en la web…
-                        </div>
-                      )}
-                    {m.parts.map((part, i) =>
-                      part.type === "text" ? (
-                        m.role === "user" ? (
-                          <p key={i} className="whitespace-pre-wrap">
-                            {part.text}
-                          </p>
-                        ) : (
-                          <MessageResponse key={i}>{part.text}</MessageResponse>
-                        )
-                      ) : null,
-                    )}
-                    {m.role === "assistant" && <Sources parts={m.parts} />}
-                  </MessageContent>
-                  {!streamingThis && (
-                    <MessageActions
-                      className={
-                        m.role === "user"
-                          ? "ml-auto transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
-                          : "-ml-2"
-                      }
-                    >
-                      {m.role === "user" ? (
-                        <MessageAction
-                          tooltip="Editar"
-                          disabled={busy}
-                          onClick={() => setEditingId(m.id)}
-                          className="size-8 text-muted-foreground"
-                        >
-                          <Pencil className="size-4" />
-                        </MessageAction>
-                      ) : (
-                        text && (
-                          <>
-                            <CopyAction text={text} />
-                            <MessageAction
-                              tooltip={speaker.speakingId === m.id ? "Detener" : "Escuchar"}
-                              onClick={() => speaker.toggle(m.id, text)}
-                              className="size-8 text-muted-foreground"
-                            >
-                              {speaker.speakingId === m.id ? (
-                                speaker.loading ? (
-                                  <Loader2 className="size-4 animate-spin" />
-                                ) : (
-                                  <Square className="size-3.5 fill-current" />
-                                )
-                              ) : (
-                                <Volume2 className="size-4" />
-                              )}
-                            </MessageAction>
-                            {m.id === lastAssistantId && (
-                              <MessageAction
-                                tooltip="Otra respuesta"
-                                disabled={busy}
-                                onClick={() => retry(m.id)}
-                                className="size-8 text-muted-foreground"
-                              >
-                                <RefreshCw className="size-4" />
-                              </MessageAction>
-                            )}
-                          </>
-                        )
-                      )}
-                    </MessageActions>
-                  )}
-                </Message>
-              );
-            })
+            messages.map((m) => (
+              <ChatMessageRow
+                key={m.id}
+                m={m}
+                streaming={status === "streaming" && m.id === messages.at(-1)?.id}
+                editing={editingId === m.id}
+                busy={busy}
+                speaking={speaker.speakingId === m.id}
+                speakerLoading={speaker.loading}
+                isLastAssistant={m.id === lastAssistantId}
+                onEdit={setEditingId}
+                onSave={saveEdit}
+                onToggleSpeak={speaker.toggle}
+                onRetry={retry}
+              />
+            ))
           )}
           {status === "submitted" && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
