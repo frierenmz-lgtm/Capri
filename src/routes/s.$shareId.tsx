@@ -1,6 +1,6 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { FileText, Globe } from "lucide-react";
-import { CapriMark } from "@/components/capri-mark";
+import { KiriAvatar, Mascot } from "@/components/mascot";
 import { Button } from "@/components/ui/button";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { getSharedThread, type SharedPart } from "@/lib/share.functions";
@@ -38,7 +38,7 @@ function SharedPage() {
     <div className="flex min-h-dvh flex-col">
       <header className="border-b">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-3">
-          <CapriMark className="size-7 shrink-0" />
+          <KiriAvatar className="size-7 shrink-0" />
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-display text-lg font-semibold">{thread.title}</h1>
             <p className="text-xs text-muted-foreground">Conversación compartida · {date}</p>
@@ -125,7 +125,7 @@ function SharedPage() {
 function SharedNotFound() {
   return (
     <main className="bg-sea flex min-h-dvh flex-col items-center justify-center px-6 text-center">
-      <CapriMark className="size-14" />
+      <Mascot state="confused" className="w-14" />
       <h1 className="mt-6 font-display text-3xl font-semibold">Enlace no disponible</h1>
       <p className="mt-3 max-w-sm text-muted-foreground">
         Esta conversación ya no se comparte o el enlace es incorrecto.

@@ -15,6 +15,7 @@ import {
   uploadProjectFile,
 } from "@/lib/projects";
 import { InstructionsDialog } from "@/components/instructions-dialog";
+import { Mascot } from "@/components/mascot";
 import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/_authenticated/chat/proyecto/$projectId")({
@@ -210,7 +211,12 @@ function ProjectPage() {
             </button>
           </li>
         ))}
-        {files.length === 0 && <li className="px-1 py-2 text-sm text-muted-foreground">Sin archivos todavía.</li>}
+        {files.length === 0 && (
+          <li className="flex flex-col items-center px-1 py-4 text-center">
+            <Mascot state="lying" className="w-24" />
+            <p className="mt-2 text-sm text-muted-foreground">Sin archivos todavía.</p>
+          </li>
+        )}
       </ul>
 
       <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-muted-foreground">Conversaciones</h2>
@@ -226,7 +232,12 @@ function ProjectPage() {
             </Link>
           </li>
         ))}
-        {threads.length === 0 && <li className="px-1 py-2 text-sm text-muted-foreground">Sin conversaciones todavía.</li>}
+        {threads.length === 0 && (
+          <li className="flex flex-col items-center px-1 py-4 text-center">
+            <Mascot state="standing" className="w-24" />
+            <p className="mt-2 text-sm text-muted-foreground">Sin conversaciones todavía.</p>
+          </li>
+        )}
       </ul>
     </div>
   );

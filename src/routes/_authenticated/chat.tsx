@@ -7,7 +7,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { createThread, deleteThread, saveDefaultInstructions, saveThreadPinned, settingsQuery, splitPinned, threadsQuery, type Thread } from "@/lib/threads";
 import { createProject, deleteProject, projectsQuery } from "@/lib/projects";
 import { MIN_SEARCH, matchesTerm, messageSearchQuery, splitHighlight, stripMarkdown } from "@/lib/search";
-import { CapriMark } from "@/components/capri-mark";
+import { KiriAvatar, Mascot } from "@/components/mascot";
 import { InstructionsDialog } from "@/components/instructions-dialog";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
@@ -240,7 +240,7 @@ function ChatLayout() {
       >
         <div className="flex items-center justify-between p-4">
           <Link to="/" className="flex items-center gap-2">
-            <CapriMark className="size-7" />
+            <KiriAvatar className="size-7" />
             <span className="font-display text-xl font-semibold">Capri</span>
           </Link>
           <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setOpen(false)} aria-label="Cerrar">
@@ -355,9 +355,12 @@ function ChatLayout() {
                 </p>
               )}
               {!deep.isFetching && messageHits.length === 0 && (
-                <p className="px-3 py-2 text-sm text-muted-foreground">
-                  {visible.length === 0 ? "Sin resultados." : "Ningún mensaje más contiene esa palabra."}
-                </p>
+                <div className="px-3 py-2">
+                  <Mascot state="surprised" className="w-12" />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {visible.length === 0 ? "Sin resultados." : "Ningún mensaje más contiene esa palabra."}
+                  </p>
+                </div>
               )}
               {messageHits.map((h) => (
                 <Link
@@ -379,7 +382,10 @@ function ChatLayout() {
             </>
           )}
           {q && !deepActive && visible.length === 0 && (
-            <p className="px-3 py-2 text-sm text-muted-foreground">Sin resultados.</p>
+            <div className="px-3 py-2">
+              <Mascot state="surprised" className="w-12" />
+              <p className="mt-2 text-sm text-muted-foreground">Sin resultados.</p>
+            </div>
           )}
         </nav>
         <div className="space-y-1 border-t p-3">
@@ -426,7 +432,7 @@ function ChatLayout() {
           <Button variant="ghost" size="icon" onClick={() => setOpen(true)} aria-label="Conversaciones">
             <Menu />
           </Button>
-          <CapriMark className="size-6" />
+          <KiriAvatar className="size-6" />
           <span className="font-display text-lg font-semibold">Capri</span>
         </header>
         <Outlet />

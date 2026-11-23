@@ -1,6 +1,20 @@
 import { cn } from "@/lib/utils";
 
-export type MascotState = "idle" | "success" | "confused" | "alert" | "sleep";
+export type MascotState =
+  | "idle"
+  | "success"
+  | "confused"
+  | "alert"
+  | "sleep"
+  | "happy"
+  | "excited"
+  | "peeking"
+  | "grumpy"
+  | "dizzy"
+  | "surprised"
+  | "lying"
+  | "standing"
+  | "box";
 
 const STATE_SRC: Record<MascotState, string> = {
   idle: "/kiri-idle.png",
@@ -8,6 +22,15 @@ const STATE_SRC: Record<MascotState, string> = {
   confused: "/kiri-confused.png",
   alert: "/kiri-alert.png",
   sleep: "/kiri-sleep.png",
+  happy: "/kiri-happy.png",
+  excited: "/kiri-excited.png",
+  peeking: "/kiri-peeking.png",
+  grumpy: "/kiri-grumpy.png",
+  dizzy: "/kiri-dizzy.png",
+  surprised: "/kiri-surprised.png",
+  lying: "/kiri-lying.png",
+  standing: "/kiri-standing.png",
+  box: "/kiri-box.png",
 };
 
 /**
@@ -24,4 +47,9 @@ export function Mascot({ state = "idle", className }: { state?: MascotState; cla
       className={cn("rounded-full bg-[#d8c9ec]", className)}
     />
   );
+}
+
+/** Kiri's circular avatar (purple ring), used as the brand mark in the app chrome. */
+export function KiriAvatar({ className }: { className?: string }) {
+  return <img src="/kiri-avatar.png" alt="Kiri" className={cn("rounded-full", className)} />;
 }

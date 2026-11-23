@@ -164,7 +164,10 @@ function Results({
         <ArrowLeft className="size-4" /> Modo estudio
       </Link>
       <h1 className="mt-4 text-xl font-semibold">{topic}</h1>
-      <Mascot state="success" className="mt-4 w-28" />
+      <Mascot
+        state={correct === total ? "excited" : correct >= total / 2 ? "happy" : "success"}
+        className="mt-4 w-28"
+      />
       <p className="mt-2 text-3xl font-bold">
         {correct} de {total}
       </p>

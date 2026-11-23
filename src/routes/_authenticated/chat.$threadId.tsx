@@ -35,7 +35,6 @@ import {
   attachmentKind,
   imagePath,
 } from "@/lib/images";
-import { CapriMark } from "@/components/capri-mark";
 import { Mascot } from "@/components/mascot";
 import { InstructionsDialog } from "@/components/instructions-dialog";
 import { ShareDialog } from "@/components/share-dialog";
@@ -250,13 +249,16 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
           )}
           {status === "submitted" && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <CapriMark className="size-5 animate-pulse" /> Capri está pensando…
+              <Mascot state="peeking" className="w-8 animate-pulse" /> Capri está pensando…
             </div>
           )}
           {status === "error" && lastIsUser && (
-            <Button variant="outline" size="sm" className="gap-1.5 self-start" onClick={() => retry()}>
-              <RefreshCw className="size-4" /> Reintentar
-            </Button>
+            <div className="flex items-center gap-3 self-start">
+              <Mascot state="grumpy" className="w-10" />
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => retry()}>
+                <RefreshCw className="size-4" /> Reintentar
+              </Button>
+            </div>
           )}
         </ConversationContent>
         <ConversationScrollButton />

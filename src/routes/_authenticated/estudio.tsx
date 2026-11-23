@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { projectsQuery } from "@/lib/projects";
 import { deleteQuiz, generateQuiz, quizzesQuery, QUIZ_COUNTS } from "@/lib/study";
 import { Button } from "@/components/ui/button";
+import { Mascot } from "@/components/mascot";
 
 export const Route = createFileRoute("/_authenticated/estudio")({
   // projectId is optional: links to /estudio without a search stay valid.
@@ -158,7 +159,10 @@ function StudyPage() {
           </li>
         ))}
         {quizzes.length === 0 && (
-          <li className="px-1 py-2 text-sm text-muted-foreground">Sin cuestionarios todavía.</li>
+          <li className="flex flex-col items-center px-1 py-6 text-center">
+            <Mascot state="box" className="w-24" />
+            <p className="mt-3 text-sm text-muted-foreground">Sin cuestionarios todavía.</p>
+          </li>
         )}
       </ul>
     </div>

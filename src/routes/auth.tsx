@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { oauthReturnPath } from "@/lib/oauth-return-path";
-import { CapriMark } from "@/components/capri-mark";
+import { KiriAvatar } from "@/components/mascot";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -81,7 +81,7 @@ function AuthPage() {
     <main className="bg-sea flex min-h-dvh items-center justify-center px-5 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <CapriMark className="size-14" />
+          <KiriAvatar className="size-14" />
           <h1 className="mt-4 text-3xl font-semibold">{mode === "in" ? "Bienvenido de vuelta" : "Crea tu cuenta"}</h1>
         </div>
         <div className="rounded-2xl border bg-card/80 p-6 backdrop-blur">
