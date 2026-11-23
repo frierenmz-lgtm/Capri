@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 // the suite always runs from the project root.
 const manifestPath = join(process.cwd(), "public", "manifest.webmanifest");
 const swPath = join(process.cwd(), "public", "sw.js");
-const iconPath = join(process.cwd(), "public", "icon.svg");
-const maskablePath = join(process.cwd(), "public", "icon-maskable.svg");
+const iconPath = join(process.cwd(), "public", "icon-512.png");
+const maskablePath = join(process.cwd(), "public", "icon-maskable.png");
 
 type ManifestIcon = { src: string; sizes: string; type: string; purpose?: string };
 
@@ -56,19 +56,19 @@ describe("installable app", () => {
     // Chrome accepts an SVG icon with sizes "any" as the install icon;
     // one "any" entry and one "maskable" entry are required.
     const icons = manifest.icons ?? [];
-    expect(icons.some((i) => i.sizes === "any" && (i.purpose ?? "any").includes("any"))).toBe(true);
-    expect(icons.some((i) => i.sizes === "any" && (i.purpose ?? "").includes("maskable"))).toBe(true);
+    expect(icons.some((i) => i.sizes === "512x512" && (i.purpose ?? "any").includes("any") && i.type === "image/png")).toBe(true);
+    expect(icons.some((i) => i.sizes === "192x192" && (i.purpose ?? "any").includes("any") && i.type === "image/png")).toBe(true);
+    expect(icons.some((i) => i.sizes === "512x512" && (i.purpose ?? "").includes("maskable") && i.type === "image/png")).toBe(true);
     for (const icon of icons) {
       expect(icon.src.startsWith("/")).toBe(true);
-      expect(icon.type).toBe("image/svg+xml");
+      expect(icon.type).toBe("image/png");
     }
   });
 
-  it("tiene los iconos SVG declarados en el manifiesto", () => {
+  it("tiene los iconos PNG de Kiri declarados en el manifiesto", () => {
     for (const path of [iconPath, maskablePath]) {
-      const svg = readFileSync(path, "utf8");
-      expect(svg).toContain("<svg");
-      expect(svg).toContain("</svg>");
+      const png = readFileSync(path);
+      expect(png.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     }
   });
 

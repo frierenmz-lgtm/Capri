@@ -1,6 +1,6 @@
 // Capri service worker: keeps the installed app usable offline.
 // Versioned cache; API calls and cross-origin requests always go to the network.
-const CACHE = "capri-v3";
+const CACHE = "capri-v4";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
