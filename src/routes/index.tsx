@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { CapriMark } from "@/components/capri-mark";
+import { Mascot } from "@/components/mascot";
 import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/")({
@@ -19,7 +19,7 @@ export const Route = createFileRoute("/")({
 function Index() {
   return (
     <main className="bg-sea flex min-h-dvh flex-col items-center justify-center px-6 text-center">
-      <CapriMark className="size-20" />
+      <Mascot className="w-40" />
       <h1 className="mt-6 text-5xl font-semibold tracking-tight sm:text-6xl">Capri</h1>
       <p className="mt-4 max-w-sm text-lg text-muted-foreground">
         Tu asistente breve y útil. Pregunta lo que quieras, en español.

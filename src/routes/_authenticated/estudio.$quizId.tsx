@@ -5,6 +5,7 @@ import { ArrowLeft, Check, RotateCcw, X } from "lucide-react";
 import { toast } from "sonner";
 import { finishQuiz, quizQuery, saveAnswer, type StudyQuestion } from "@/lib/study";
 import { scoreQuiz } from "@/lib/study-quiz";
+import { Mascot } from "@/components/mascot";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -162,6 +163,7 @@ function Results({
         <ArrowLeft className="size-4" /> Modo estudio
       </Link>
       <h1 className="mt-4 text-xl font-semibold">{topic}</h1>
+      <Mascot className="mt-4 w-28" />
       <p className="mt-2 text-3xl font-bold">
         {correct} de {total}
       </p>

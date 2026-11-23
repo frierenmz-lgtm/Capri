@@ -36,6 +36,7 @@ import {
   imagePath,
 } from "@/lib/images";
 import { CapriMark } from "@/components/capri-mark";
+import { Mascot } from "@/components/mascot";
 import { InstructionsDialog } from "@/components/instructions-dialog";
 import { ShareDialog } from "@/components/share-dialog";
 import { Button } from "@/components/ui/button";
@@ -144,7 +145,7 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
         <ConversationContent className="mx-auto w-full max-w-3xl">
           {messages.length === 0 ? (
             <ConversationEmptyState
-              icon={<CapriMark className="size-14" />}
+              icon={<Mascot className="w-24" />}
               title="Hola, soy Capri"
               description="Pregúntame lo que quieras. Respondo breve y en español."
             />
