@@ -11,20 +11,11 @@ const STATE_SRC: Record<MascotState, string> = {
 };
 
 /**
- * Kiri, Capri's mascot. Without a state it shows the full body
- * (public/mascot.png); with a state it shows the matching UI cutout
- * (public/kiri-<state>.png), rendered as a circle.
+ * Kiri, Capri's mascot. Shows the UI cutout for the given state
+ * (public/kiri-<state>.png), rendered as a circle. Defaults to idle.
+ * All cutouts come from the v2 UI sheet only.
  */
-export function Mascot({ state, className }: { state?: MascotState; className?: string }) {
-  if (!state) {
-    return (
-      <img
-        src="/mascot.png"
-        alt="Kiri, la mascota de Capri"
-        className={cn("rounded-3xl bg-[#d6d3d6]", className)}
-      />
-    );
-  }
+export function Mascot({ state = "idle", className }: { state?: MascotState; className?: string }) {
   return (
     <img
       src={STATE_SRC[state]}
