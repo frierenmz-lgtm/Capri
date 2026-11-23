@@ -120,7 +120,7 @@ function StudyPage() {
             ))}
           </select>
         </div>
-        <Button onClick={() => void create()} disabled={generating || !title} className="gap-1.5">
+        <Button onClick={() => void create()} disabled={generating} className="gap-1.5">
           {generating ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
           {generating ? "Generando…" : "Generar cuestionario"}
         </Button>
