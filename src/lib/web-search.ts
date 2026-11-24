@@ -48,7 +48,20 @@ export async function searchWeb(query: string, apiKey: string | undefined): Prom
     if (res.status === 429) return { error: "Se alcanzó el límite de búsquedas. Inténtalo más tarde." };
     return { error: `La búsqueda falló (código ${res.status}). Inténtalo de nuevo.` };
   }
-  const data = (await res.json()) as TavilyResponse;
+  let data: TavilyResponse;
+  try {
+    const payload: unknown = await res.json();
+    if (!payload || typeof payload !== "object" || !Array.isArray((payload as TavilyResponse).results)) {
+      return {
+        error: "El buscador devolvió una respuesta inválida. Inténtalo de nuevo.",
+      };
+    }
+    data = payload as TavilyResponse;
+  } catch {
+    return {
+      error: "El buscador devolvió una respuesta inválida. Inténtalo de nuevo.",
+    };
+  }
   const results = (data.results ?? [])
     .filter((r) => typeof r.url === "string" && r.url.startsWith("http"))
     .slice(0, MAX_RESULTS)

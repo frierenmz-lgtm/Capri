@@ -72,6 +72,30 @@ describe("searchWeb", () => {
     const out = await searchWeb("algo", KEY);
     expect(out).toEqual({ error: "No se pudo conectar con el buscador. Inténtalo de nuevo." });
   });
+
+  it("devuelve error cuando la respuesta no trae results válido", async () => {
+    for (const json of [{}, { results: "no es un arreglo" }, null]) {
+      stubFetch({ ok: true, status: 200, json });
+      expect(await searchWeb("algo", KEY)).toEqual({
+        error: "El buscador devolvió una respuesta inválida. Inténtalo de nuevo.",
+      });
+    }
+  });
+
+  it("devuelve error cuando la respuesta no es JSON válido", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error("json roto");
+        },
+      })),
+    );
+    const out = await searchWeb("algo", KEY);
+    expect(out).toEqual({ error: "El buscador devolvió una respuesta inválida. Inténtalo de nuevo." });
+  });
 });
 
 describe("createWebSearchTool", () => {
