@@ -1,4 +1,5 @@
 import { createGroq } from "@ai-sdk/groq";
+import { createOpenAI } from "@ai-sdk/openai";
 import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from "ai";
 import { authenticate, json, type UserClient } from "./auth-request.server";
 import { buildSystemPrompt } from "./instructions";
@@ -6,8 +7,9 @@ import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
 import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from "./web-search";
-import { DEFAULT_CHAT_MODEL, resolveChatModel } from "./models";
+import { CUSTOM_CHAT_MODEL_ID, CUSTOM_CHAT_MODEL_NAME, DEFAULT_CHAT_MODEL, resolveChatModel } from "./models";
 import { budgetProjectTexts, pickFallbackInstructions, projectFileText, selectProjectFiles } from "./project-context";
+import { trimHistory } from "./history-budget";
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -54,7 +56,9 @@ export async function handleChat(request: Request) {
   const latestUserText = messages.filter((m) => m.role === "user").slice(-1)[0]?.parts
     .map((part) => part.type === "text" ? part.text : "").join(" ") ?? "";
   const memories = selectRelevantMemories(memoryRows ?? [], latestUserText);
-  const system = buildSystemPrompt(thread.custom_instructions, fallbackInstructions, memories);
+  const chatModelId = resolveChatModel(thread.model);
+  const isCustomModel = chatModelId === CUSTOM_CHAT_MODEL_ID;
+  const system = buildSystemPrompt(thread.custom_instructions, fallbackInstructions, memories, !isCustomModel);
 
   const last = messages[messages.length - 1]!;
   if (last.role === "user") {
@@ -74,6 +78,22 @@ export async function handleChat(request: Request) {
 
   const provider = createGroq({ apiKey });
 
+  // The fine-tuned model runs on Modal, not Groq, behind an OpenAI-compatible
+  // API. Memory extraction and title generation below keep using the Groq
+  // provider and the big model.
+  // Both providers return the same model type; the streamText call below
+  // carries the same pre-existing provider type mismatch as the Groq-only
+  // calls in extractAndSaveMemories and generateTitle.
+  let chatModel: ReturnType<ReturnType<typeof createGroq>>;
+  if (isCustomModel) {
+    const customUrl = process.env["CAPRI_CUSTOM_MODEL_URL"];
+    const customKey = process.env["CAPRI_CUSTOM_MODEL_KEY"];
+    if (!customUrl || !customKey) return json(500, "El modelo de Capri no está configurado todavía.");
+    chatModel = createOpenAI({ baseURL: customUrl, apiKey: customKey })(CUSTOM_CHAT_MODEL_NAME);
+  } else {
+    chatModel = provider(chatModelId);
+  }
+
   let modelMessages: UIMessage[];
   try {
     modelMessages = await resolveAttachments(supabase, userId, messages);
@@ -81,6 +101,11 @@ export async function handleChat(request: Request) {
     console.error("resolve attachments", e);
     return json(400, (e as Error).message || "No se pudo leer un archivo adjunto.");
   }
+
+  // The whole thread used to go to the model on every turn; cap the history so
+  // input tokens stop growing with the conversation. The project-files message
+  // below is added after the trim, so its own 24,000-char budget is untouched.
+  modelMessages = trimHistory(modelMessages);
 
   // Project files ride along as a leading message (never saved): the model sees
   // them on every turn of a thread that belongs to a project.
@@ -116,11 +141,14 @@ export async function handleChat(request: Request) {
   });
 
   const result = streamText({
-    model: provider(resolveChatModel(thread.model)),
+    model: chatModel,
     instructions: `${system}\n\nHoy es ${today} y son las ${now} (hora de Ciudad de México, UTC-06:00).${project ? `\nEstás en el proyecto «${project.name}».` : ""}`,
     messages: await convertToModelMessages(contextMessages),
     // Web search via Tavily; at most two searches per turn (one credit each on the free plan).
-    tools: { [WEB_SEARCH_TOOL_NAME]: createWebSearchTool(process.env["TAVILY_API_KEY"]) },
+    // The fine-tuned model has no search tool, so it gets none.
+    ...(isCustomModel
+      ? {}
+      : { tools: { [WEB_SEARCH_TOOL_NAME]: createWebSearchTool(process.env["TAVILY_API_KEY"]) } }),
     stopWhen: stepCountIs(3),
     abortSignal: request.signal,
   });
