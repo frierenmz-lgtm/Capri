@@ -1,6 +1,14 @@
 import { queryOptions } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { IMAGE_BUCKET, IMAGE_SCHEME, attachmentKind } from "./images";
+import {
+  ATTACH_ACCEPT,
+  IMAGE_BUCKET,
+  IMAGE_SCHEME,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES,
+  attachmentKind,
+} from "./images";
+import { validateChatAttachments } from "./chat-attachments";
 import { MAX_PROJECT_NAME } from "./project-context";
 import type { Thread } from "./threads";
 
@@ -40,14 +48,19 @@ export const projectQuery = (projectId: string) =>
   queryOptions({
     queryKey: ["project", projectId],
     queryFn: async (): Promise<{ project: Project | null; files: ProjectFile[] }> => {
-      const [{ data: project, error: projectError }, { data: files, error: filesError }] = await Promise.all([
-        supabase.from("projects").select("id,name,instructions,created_at,updated_at").eq("id", projectId).maybeSingle(),
-        supabase
-          .from("project_files")
-          .select("id,project_id,name,storage_path,media_type,created_at")
-          .eq("project_id", projectId)
-          .order("created_at", { ascending: false }),
-      ]);
+      const [{ data: project, error: projectError }, { data: files, error: filesError }] =
+        await Promise.all([
+          supabase
+            .from("projects")
+            .select("id,name,instructions,created_at,updated_at")
+            .eq("id", projectId)
+            .maybeSingle(),
+          supabase
+            .from("project_files")
+            .select("id,project_id,name,storage_path,media_type,created_at")
+            .eq("project_id", projectId)
+            .order("created_at", { ascending: false }),
+        ]);
       if (projectError) throw projectError;
       if (filesError) throw filesError;
       return { project, files: files ?? [] };
@@ -107,13 +120,27 @@ function storageExt(kind: "image" | "pdf" | "text", mediaType: string): string {
   return "txt";
 }
 
+/** Client-side limits for project uploads; Storage receives uploads directly from the browser. */
+export function validateProjectFileUploads(files: readonly File[]) {
+  return validateChatAttachments(files, {
+    accept: ATTACH_ACCEPT,
+    maxFiles: MAX_IMAGES,
+    maxFilesContext: "carga",
+    maxFileSize: MAX_IMAGE_BYTES,
+  });
+}
+
 /** Uploads a file to the project (same storage as chat attachments) and records it. */
 export async function uploadProjectFile(projectId: string, file: File): Promise<void> {
   const { data: auth } = await supabase.auth.getUser();
   const uid = auth.user?.id;
   if (!uid) throw new Error("Inicia sesión para subir archivos.");
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new Error(`«${file.name}» excede el máximo de 5 MiB por archivo.`);
+  }
   const kind = attachmentKind(file.type, file.name);
-  if (!kind) throw new Error(`No puedo leer «${file.name}». Usa imágenes, PDF o archivos de texto.`);
+  if (!kind)
+    throw new Error(`No puedo leer «${file.name}». Usa imágenes, PDF o archivos de texto.`);
   if (kind === "text") {
     const head = new Uint8Array(await file.slice(0, 8192).arrayBuffer());
     if (head.includes(0)) throw new Error(`«${file.name}» no parece un archivo de texto.`);
@@ -132,9 +159,42 @@ export async function uploadProjectFile(projectId: string, file: File): Promise<
     media_type: mediaType,
   });
   if (error) {
-    await supabase.storage.from(IMAGE_BUCKET).remove([path]);
-    throw error;
+    try {
+      const { error: cleanupError } = await supabase.storage.from(IMAGE_BUCKET).remove([path]);
+      if (cleanupError) throw cleanupError;
+    } catch {
+      throw new Error(
+        `No se pudo guardar «${file.name}» en el proyecto. La limpieza en Storage falló; el archivo podría permanecer allí.`,
+      );
+    }
+    throw new Error(`No se pudo guardar «${file.name}» en el proyecto.`);
   }
+}
+
+export type ProjectFileUploadFailure = { file: File; error: Error };
+export type ProjectFileUploadBatchResult = { uploaded: File[]; failed: ProjectFileUploadFailure[] };
+type ProjectFileUploader = (projectId: string, file: File) => Promise<void>;
+
+/** Upload each project file independently so a failed file never erases successful siblings. */
+export async function uploadProjectFiles(
+  projectId: string,
+  files: readonly File[],
+  uploadOne: ProjectFileUploader = uploadProjectFile,
+): Promise<ProjectFileUploadBatchResult> {
+  const uploaded: File[] = [];
+  const failed: ProjectFileUploadFailure[] = [];
+  for (const file of files) {
+    try {
+      await uploadOne(projectId, file);
+      uploaded.push(file);
+    } catch (error) {
+      failed.push({
+        file,
+        error: error instanceof Error ? error : new Error(`No se pudo subir «${file.name}».`),
+      });
+    }
+  }
+  return { uploaded, failed };
 }
 
 export async function deleteProjectFile(file: ProjectFile) {

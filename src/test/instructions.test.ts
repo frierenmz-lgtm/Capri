@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { BASE_SYSTEM, buildSystemPrompt, MAX_INSTRUCTIONS, pickInstructions } from "@/lib/instructions";
+import {
+  BASE_SYSTEM,
+  buildSystemPrompt,
+  MAX_INSTRUCTIONS,
+  pickInstructions,
+} from "@/lib/instructions";
 
 describe("custom instructions", () => {
   it("uses the conversation's instructions over the account default", () => {

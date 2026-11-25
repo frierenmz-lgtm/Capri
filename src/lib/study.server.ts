@@ -1,7 +1,12 @@
 import { createGroq } from "@ai-sdk/groq";
 import { streamText } from "ai";
 import { authenticate, json } from "./auth-request.server";
-import { IMAGE_BUCKET, attachmentKind, ownsImagePath } from "./images";
+import {
+  ChatAttachmentLimitError,
+  type ChatAttachmentMetadataCache,
+  validateChatAttachment,
+} from "./chat-attachment-limits.server";
+import { IMAGE_BUCKET, IMAGE_SCHEME, attachmentKind, ownsImagePath } from "./images";
 import { DEFAULT_CHAT_MODEL } from "./models";
 import { budgetProjectTexts, projectFileText, selectProjectFiles } from "./project-context";
 import { MAX_QUIZ_QUESTIONS, MIN_QUIZ_QUESTIONS, parseQuizJson } from "./study-quiz";
@@ -49,11 +54,37 @@ export async function handleStudyGenerate(request: Request) {
       .select("name,storage_path,media_type,created_at")
       .eq("project_id", project.id)
       .order("created_at", { ascending: false });
+    const selectedTexts = selectProjectFiles(fileRows ?? []).filter(
+      (file) =>
+        ownsImagePath(file.storage_path, userId) &&
+        attachmentKind(file.media_type, file.name) === "text",
+    );
+    const metadataCache: ChatAttachmentMetadataCache = new Map();
+    let validatedTexts: { file: (typeof selectedTexts)[number]; path: string }[];
+    try {
+      validatedTexts = await Promise.all(
+        selectedTexts.map(async (file) => ({
+          file,
+          path: await validateChatAttachment(
+            supabase,
+            userId,
+            {
+              type: "file",
+              mediaType: file.media_type,
+              filename: file.name,
+              url: `${IMAGE_SCHEME}${file.storage_path}`,
+            },
+            metadataCache,
+          ),
+        })),
+      );
+    } catch (error) {
+      if (error instanceof ChatAttachmentLimitError) return json(error.status, error.message);
+      throw error;
+    }
     const texts: { name: string; text: string }[] = [];
-    for (const file of selectProjectFiles(fileRows ?? [])) {
-      if (!ownsImagePath(file.storage_path, userId)) continue;
-      if (attachmentKind(file.media_type, file.name) !== "text") continue;
-      const { data: blob, error } = await supabase.storage.from(IMAGE_BUCKET).download(file.storage_path);
+    for (const { file, path } of validatedTexts) {
+      const { data: blob, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
       if (error || !blob) continue;
       texts.push({ name: file.name, text: await blob.text() });
     }
@@ -89,7 +120,9 @@ export async function handleStudyGenerate(request: Request) {
       // The Groq provider returns LanguageModelV4 while streamText expects
       // LanguageModel (duplicate @ai-sdk/provider in the tree); same cast
       // would be needed anywhere a model is passed.
-      model: createGroq({ apiKey })(DEFAULT_CHAT_MODEL) as Parameters<typeof streamText>[0]["model"],
+      model: createGroq({ apiKey })(DEFAULT_CHAT_MODEL) as Parameters<
+        typeof streamText
+      >[0]["model"],
       instructions:
         `Genera un cuestionario de opción múltiple en español. Devuelve EXCLUSIVAMENTE un JSON válido con la forma ` +
         `{"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}. ` +

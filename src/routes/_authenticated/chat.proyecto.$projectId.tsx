@@ -1,9 +1,18 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, FileText, FolderOpen, GraduationCap, Plus, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import {
+  ArrowLeft,
+  FileText,
+  FolderOpen,
+  GraduationCap,
+  Plus,
+  SlidersHorizontal,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
-import { ATTACH_ACCEPT } from "@/lib/images";
+import { ATTACH_ACCEPT, MAX_IMAGE_BYTES, MAX_IMAGES } from "@/lib/images";
 import { createThread } from "@/lib/threads";
 import {
   deleteProject,
@@ -12,7 +21,8 @@ import {
   projectThreadsQuery,
   renameProject,
   saveProjectInstructions,
-  uploadProjectFile,
+  uploadProjectFiles,
+  validateProjectFileUploads,
 } from "@/lib/projects";
 import { InstructionsDialog } from "@/components/instructions-dialog";
 import { Mascot } from "@/components/mascot";
@@ -20,7 +30,10 @@ import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/_authenticated/chat/proyecto/$projectId")({
   head: () => ({
-    meta: [{ title: "Proyecto — Capri" }, { name: "description", content: "Chats y archivos de un proyecto." }],
+    meta: [
+      { title: "Proyecto — Capri" },
+      { name: "description", content: "Chats y archivos de un proyecto." },
+    ],
   }),
   component: ProjectPage,
 });
@@ -86,14 +99,26 @@ function ProjectPage() {
 
   async function onFiles(list: FileList | null) {
     if (!list || list.length === 0) return;
+    const { accepted, issue } = validateProjectFileUploads(Array.from(list));
+    if (issue) toast.error(issue.message);
+    if (accepted.length === 0) {
+      if (fileInput.current) fileInput.current.value = "";
+      return;
+    }
     setUploading(true);
     try {
-      for (const file of Array.from(list)) {
-        try {
-          await uploadProjectFile(projectId, file);
-        } catch (e) {
-          toast.error((e as Error).message);
-        }
+      const { uploaded, failed } = await uploadProjectFiles(projectId, accepted);
+      if (failed.length > 0) {
+        const failedNames = failed
+          .map(({ file, error }) => `${file.name}: ${error.message}`)
+          .join("; ");
+        const keptNames =
+          uploaded.length > 0
+            ? `Sí quedaron subidos: ${uploaded.map((file) => file.name).join(", ")}.`
+            : "No quedó ningún archivo subido.";
+        toast.error(`Fallaron algunas cargas: ${failedNames}. ${keptNames}`);
+      } else if (uploaded.length > 0) {
+        toast.success(`Se subieron: ${uploaded.map((file) => file.name).join(", ")}.`);
       }
       await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     } finally {
@@ -133,14 +158,19 @@ function ProjectPage() {
             className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-2xl font-semibold outline-none focus-visible:border-input focus-visible:bg-background"
           />
         </div>
-        <Button variant="ghost" size="sm" onClick={() => void removeProject()} className="text-muted-foreground hover:text-destructive">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void removeProject()}
+          className="text-muted-foreground hover:text-destructive"
+        >
           <Trash2 className="size-4" />
           {confirmDelete ? "¿Borrar?" : "Borrar"}
         </Button>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
-        Las conversaciones de este proyecto usan sus instrucciones y sus archivos como contexto. Los archivos se
-        leen en cada respuesta, hasta 4 archivos y 24,000 caracteres de texto por turno.
+        Las conversaciones de este proyecto usan sus instrucciones y sus archivos como contexto. Los
+        archivos se leen en cada respuesta, hasta 4 archivos y 24,000 caracteres de texto por turno.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <InstructionsDialog
@@ -157,7 +187,9 @@ function ProjectPage() {
           trigger={
             <Button variant="outline" size="sm" className="gap-1.5">
               <SlidersHorizontal className="size-4" /> Instrucciones
-              {project?.instructions && <span className="size-1.5 rounded-full bg-primary" aria-label="Activas" />}
+              {project?.instructions && (
+                <span className="size-1.5 rounded-full bg-primary" aria-label="Activas" />
+              )}
             </Button>
           }
         />
@@ -174,7 +206,9 @@ function ProjectPage() {
         </Button>
       </div>
 
-      <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-muted-foreground">Archivos</h2>
+      <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-muted-foreground">
+        Archivos
+      </h2>
       <div className="mt-2">
         <input
           ref={fileInput}
@@ -184,14 +218,26 @@ function ProjectPage() {
           className="hidden"
           onChange={(e) => void onFiles(e.target.files)}
         />
-        <Button variant="outline" size="sm" onClick={() => fileInput.current?.click()} disabled={uploading} className="gap-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => fileInput.current?.click()}
+          disabled={uploading}
+          className="gap-1.5"
+        >
           <Upload className="size-4" /> {uploading ? "Subiendo…" : "Subir archivos"}
         </Button>
-        <p className="mt-1 text-xs text-muted-foreground">Imágenes, PDF y archivos de texto.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Imágenes, PDF y archivos de texto; hasta {MAX_IMAGES} por carga y{" "}
+          {MAX_IMAGE_BYTES / (1024 * 1024)} MiB por archivo.
+        </p>
       </div>
       <ul className="mt-3 space-y-1">
         {files.map((f) => (
-          <li key={f.id} className="group flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+          <li
+            key={f.id}
+            className="group flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"
+          >
             <FileText className="size-4 shrink-0 text-primary" />
             <span className="min-w-0 flex-1 truncate">{f.name}</span>
             <button
@@ -219,7 +265,9 @@ function ProjectPage() {
         )}
       </ul>
 
-      <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-muted-foreground">Conversaciones</h2>
+      <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-muted-foreground">
+        Conversaciones
+      </h2>
       <ul className="mt-3 space-y-1">
         {threads.map((t) => (
           <li key={t.id}>

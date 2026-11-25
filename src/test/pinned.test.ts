@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { splitPinned, type Thread } from "@/lib/threads";
 
 function thread(id: string, pinned: boolean, updated_at: string): Thread {
-  return { id, title: id, updated_at, pinned };
+  return { id, title: id, updated_at, pinned, project_id: null };
 }
 
 describe("splitPinned", () => {
@@ -14,8 +14,14 @@ describe("splitPinned", () => {
       thread("d", true, "2026-11-21T08:00:00Z"),
     ];
     expect(splitPinned(threads)).toEqual({
-      pinned: [thread("b", true, "2026-11-21T09:00:00Z"), thread("d", true, "2026-11-21T08:00:00Z")],
-      rest: [thread("a", false, "2026-11-21T10:00:00Z"), thread("c", false, "2026-11-21T11:00:00Z")],
+      pinned: [
+        thread("b", true, "2026-11-21T09:00:00Z"),
+        thread("d", true, "2026-11-21T08:00:00Z"),
+      ],
+      rest: [
+        thread("a", false, "2026-11-21T10:00:00Z"),
+        thread("c", false, "2026-11-21T11:00:00Z"),
+      ],
     });
   });
 

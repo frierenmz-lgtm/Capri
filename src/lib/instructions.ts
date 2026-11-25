@@ -19,9 +19,7 @@ export function buildSystemPrompt(
   canSearchWeb = true,
 ): string {
   const custom = pickInstructions(thread, defaults);
-  const baseSystem = canSearchWeb
-    ? BASE_SYSTEM
-    : `${BASE_SYSTEM_PREFIX}${ATTACHMENT_INSTRUCTION}`;
+  const baseSystem = canSearchWeb ? BASE_SYSTEM : `${BASE_SYSTEM_PREFIX}${ATTACHMENT_INSTRUCTION}`;
   const instructions = custom
     ? `${baseSystem}\n\nEl usuario te dio estas instrucciones personalizadas. Síguelas; tienen prioridad sobre el tono, estilo e idioma por defecto:\n"""\n${custom}\n"""`
     : baseSystem;

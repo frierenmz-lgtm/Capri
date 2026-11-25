@@ -60,7 +60,8 @@ function wavToPcm24k(bytes: Uint8Array): Int16Array | null {
     }
     offset = body + size + (size % 2);
   }
-  if (format !== 1 || channels !== 1 || !sampleRate || bitsPerSample !== 16 || dataStart < 0) return null;
+  if (format !== 1 || channels !== 1 || !sampleRate || bitsPerSample !== 16 || dataStart < 0)
+    return null;
   const frames = Math.floor(dataLength / 2);
   const pcm = new Int16Array(frames);
   for (let i = 0; i < frames; i++) pcm[i] = view.getInt16(dataStart + i * 2, true);
@@ -141,7 +142,9 @@ export async function handleSpeech(request: Request) {
     start(controller) {
       // Chunks must stay a multiple of 4 chars so each one is valid base64.
       for (let i = 0; i < audio.length; i += 16384) {
-        controller.enqueue(sseEvent({ type: "speech.audio.delta", audio: audio.slice(i, i + 16384) }));
+        controller.enqueue(
+          sseEvent({ type: "speech.audio.delta", audio: audio.slice(i, i + 16384) }),
+        );
       }
       controller.enqueue(sseEvent({ type: "speech.audio.done" }));
       controller.close();
@@ -155,19 +158,25 @@ export async function handleTranscribe(request: Request) {
   const auth = await authenticate(request);
   if ("error" in auth) return auth.error;
   const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().startsWith("multipart/form-data;") || !/boundary=/i.test(contentType)) {
+  if (
+    !contentType.toLowerCase().startsWith("multipart/form-data;") ||
+    !/boundary=/i.test(contentType)
+  ) {
     return json(415, "Formato de audio no válido.");
   }
   const bytes = await readBoundedBody(request, MAX_TRANSCRIBE_REQUEST_BYTES);
   if (!bytes) return json(413, "La grabación es demasiado larga.");
   let file: FormDataEntryValue | null;
   try {
-    const form = await new Response(bytes, { headers: { "content-type": contentType } }).formData();
+    const body = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(body).set(bytes);
+    const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
     file = form.get("file");
   } catch {
     return json(400, "Solicitud inválida.");
   }
-  if (!(file instanceof File) || !file.type.startsWith("audio/")) return json(400, "Audio no válido.");
+  if (!(file instanceof File) || !file.type.startsWith("audio/"))
+    return json(400, "Audio no válido.");
   if (file.size < 2048) return json(400, "La grabación quedó vacía. Inténtalo de nuevo.");
   if (file.size > MAX_AUDIO_BYTES) return json(413, "La grabación es demasiado larga.");
   const apiKey = groqApiKey();

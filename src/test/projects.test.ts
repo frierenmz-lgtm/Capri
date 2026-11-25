@@ -1,4 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const supabaseMock = vi.hoisted(() => {
+  const getUser = vi.fn();
+  const storageFrom = vi.fn();
+  const upload = vi.fn();
+  const remove = vi.fn();
+  const from = vi.fn();
+  const insert = vi.fn();
+  return {
+    auth: { getUser },
+    from,
+    getUser,
+    insert,
+    remove,
+    storage: { from: storageFrom },
+    storageFrom,
+    upload,
+  };
+});
+
+vi.mock("@/integrations/supabase/client", () => ({ supabase: supabaseMock }));
+
 import { buildSystemPrompt } from "@/lib/instructions";
 import {
   budgetProjectTexts,
@@ -6,8 +28,24 @@ import {
   projectFileText,
   selectProjectFiles,
 } from "@/lib/project-context";
+import { MAX_IMAGE_BYTES } from "@/lib/images";
+import { uploadProjectFile, uploadProjectFiles, validateProjectFileUploads } from "@/lib/projects";
 
 const file = (name: string, created_at: string) => ({ name, created_at });
+const uploadFile = (name: string, type = "text/plain") => new File(["hola"], name, { type });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  supabaseMock.getUser.mockResolvedValue({ data: { user: { id: "user-1" } } });
+  supabaseMock.storageFrom.mockReturnValue({
+    upload: supabaseMock.upload,
+    remove: supabaseMock.remove,
+  });
+  supabaseMock.from.mockReturnValue({ insert: supabaseMock.insert });
+  supabaseMock.upload.mockResolvedValue({ error: null });
+  supabaseMock.insert.mockResolvedValue({ error: null });
+  supabaseMock.remove.mockResolvedValue({ error: null });
+});
 
 describe("project files in context", () => {
   it("keeps the most recent files, at most 4", () => {
@@ -18,7 +56,12 @@ describe("project files in context", () => {
       file("d.txt", "2026-01-04T00:00:00Z"),
       file("e.txt", "2026-01-05T00:00:00Z"),
     ];
-    expect(selectProjectFiles(files).map((f) => f.name)).toEqual(["e.txt", "d.txt", "c.txt", "b.txt"]);
+    expect(selectProjectFiles(files).map((f) => f.name)).toEqual([
+      "e.txt",
+      "d.txt",
+      "c.txt",
+      "b.txt",
+    ]);
   });
 
   it("shares the text budget across files and cuts the rest", () => {
@@ -49,9 +92,81 @@ describe("project files in context", () => {
   });
 });
 
+describe("project file uploads", () => {
+  it("accepts at most four compatible files up to 5 MiB each and reports skipped files", () => {
+    const oversized = { name: "grande.png", type: "image/png", size: MAX_IMAGE_BYTES + 1 } as File;
+    const selection = [
+      uploadFile("uno.txt"),
+      oversized,
+      uploadFile("dos.txt"),
+      uploadFile("tres.txt"),
+      uploadFile("cuatro.txt"),
+      uploadFile("cinco.txt"),
+      { name: "app.exe", type: "application/octet-stream", size: 20 } as File,
+    ];
+
+    const result = validateProjectFileUploads(selection);
+
+    expect(result.accepted.map((selected) => selected.name)).toEqual([
+      "uno.txt",
+      "dos.txt",
+      "tres.txt",
+      "cuatro.txt",
+    ]);
+    expect(result.issue?.message).toContain("grande.png");
+    expect(result.issue?.message).toContain("cinco.txt");
+    expect(result.issue?.message).toContain("app.exe");
+    expect(result.issue?.message).toContain("por carga");
+  });
+
+  it("rejects a file over 5 MiB before sending it to Storage", async () => {
+    const oversized = { name: "grande.png", type: "image/png", size: MAX_IMAGE_BYTES + 1 } as File;
+
+    await expect(uploadProjectFile("project-1", oversized)).rejects.toThrow("5 MiB");
+    expect(supabaseMock.upload).not.toHaveBeenCalled();
+    expect(supabaseMock.insert).not.toHaveBeenCalled();
+  });
+
+  it("keeps successful sibling uploads and continues after a partial failure", async () => {
+    const selected = [uploadFile("ok-1.txt"), uploadFile("fallo.txt"), uploadFile("ok-2.txt")];
+    const uploadOne = vi.fn(async (_projectId: string, selectedFile: File) => {
+      if (selectedFile.name === "fallo.txt") throw new Error("No se pudo subir.");
+    });
+
+    const result = await uploadProjectFiles("project-1", selected, uploadOne);
+
+    expect(uploadOne).toHaveBeenCalledTimes(3);
+    expect(result.uploaded.map((uploaded) => uploaded.name)).toEqual(["ok-1.txt", "ok-2.txt"]);
+    expect(result.failed.map(({ file: failedFile }) => failedFile.name)).toEqual(["fallo.txt"]);
+    expect(result.failed[0]?.error.message).toBe("No se pudo subir.");
+  });
+
+  it("removes the uploaded object when recording its project row fails", async () => {
+    supabaseMock.insert.mockResolvedValueOnce({ error: new Error("insert failed") });
+
+    await expect(
+      uploadProjectFile("project-1", uploadFile("nota.png", "image/png")),
+    ).rejects.toThrow("No se pudo guardar «nota.png» en el proyecto.");
+
+    expect(supabaseMock.remove).toHaveBeenCalledWith([supabaseMock.upload.mock.calls[0]?.[0]]);
+  });
+
+  it("reports when cleanup fails after the project row insert fails", async () => {
+    supabaseMock.insert.mockResolvedValueOnce({ error: new Error("insert failed") });
+    supabaseMock.remove.mockResolvedValueOnce({ error: new Error("remove failed") });
+
+    await expect(
+      uploadProjectFile("project-1", uploadFile("nota.png", "image/png")),
+    ).rejects.toThrow("La limpieza en Storage falló; el archivo podría permanecer allí.");
+    expect(supabaseMock.remove).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("project instructions precedence", () => {
   it("uses the project instructions instead of the account default", () => {
-    expect(pickFallbackInstructions("Instrucciones del proyecto", "Generales")).toBe("Instrucciones del proyecto");
+    expect(pickFallbackInstructions("Instrucciones del proyecto", "Generales")).toBe(
+      "Instrucciones del proyecto",
+    );
   });
 
   it("falls back to the account default when the project has none", () => {

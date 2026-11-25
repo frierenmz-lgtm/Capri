@@ -15,6 +15,16 @@ describe("resolveTrimmedAttachments", () => {
     const supabase = {
       storage: {
         from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => ({
+            data: [
+              {
+                id: "object-id",
+                name: options?.search ?? "retained.txt",
+                metadata: { size: 20 },
+              },
+            ],
+            error: null,
+          })),
           download: vi.fn(async (path: string) => {
             downloaded.push(path);
             return path === "user/retained.txt"
@@ -74,6 +84,16 @@ describe("resolveTrimmedAttachments", () => {
     const supabase = {
       storage: {
         from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => ({
+            data: [
+              {
+                id: "object-id",
+                name: options?.search ?? "retained.txt",
+                metadata: { size: longAttachmentText.length },
+              },
+            ],
+            error: null,
+          })),
           download: vi.fn(async (path: string) => {
             downloaded.push(path);
             return path === "user/retained.txt"
@@ -224,7 +244,7 @@ describe("resolveTrimmedAttachments", () => {
     expect(messageCost(resolved[0]!)).toBeLessThanOrEqual(MAX_HISTORY_CHARS);
   });
 
-  it("no usa size como cota cuando el objeto está codificado y comprueba el contenido descargado", async () => {
+  it("no descarga un adjunto con codificación de contenido comprimida", async () => {
     const downloadPaths: string[] = [];
     const supabase = {
       storage: {
@@ -262,13 +282,14 @@ describe("resolveTrimmedAttachments", () => {
       { id: "current", role: "user", parts: [{ type: "text", text: "x".repeat(5_000) }] },
     ];
 
-    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+    await expect(resolveTrimmedAttachments(supabase, "user", messages)).rejects.toThrow(
+      "No se admiten archivos adjuntos con compresión.",
+    );
 
-    expect(downloadPaths).toEqual(["user/old.txt"]);
-    expect(resolved.map((message) => message.id)).toEqual(["old", "current"]);
+    expect(downloadPaths).toEqual([]);
   });
 
-  it("descarga el adjunto antiguo si list no devuelve size fiable", async () => {
+  it("no descarga el adjunto si list no devuelve size fiable", async () => {
     const downloadPaths: string[] = [];
     const supabase = {
       storage: {
@@ -300,9 +321,10 @@ describe("resolveTrimmedAttachments", () => {
       { id: "current", role: "user", parts: [{ type: "text", text: "x".repeat(5_000) }] },
     ];
 
-    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+    await expect(resolveTrimmedAttachments(supabase, "user", messages)).rejects.toThrow(
+      "No se pudo verificar el tamaño de un archivo adjunto.",
+    );
 
-    expect(downloadPaths).toEqual(["user/old.txt"]);
-    expect(resolved.map((message) => message.id)).toEqual(["old", "current"]);
+    expect(downloadPaths).toEqual([]);
   });
 });

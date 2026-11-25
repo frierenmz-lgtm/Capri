@@ -22,8 +22,15 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { uploadBatchWithCleanup } from "@/lib/chat-attachments";
 import { supabase } from "@/integrations/supabase/client";
-import { messagesQuery, moveThreadToProject, saveThreadInstructions, saveThreadModel, threadQuery } from "@/lib/threads";
+import {
+  messagesQuery,
+  moveThreadToProject,
+  saveThreadInstructions,
+  saveThreadModel,
+  threadQuery,
+} from "@/lib/threads";
 import { projectsQuery } from "@/lib/projects";
 import { CHAT_MODELS, resolveChatModel } from "@/lib/models";
 import {
@@ -73,7 +80,8 @@ import {
 } from "@/components/ai-elements/prompt-input";
 
 export const Route = createFileRoute("/_authenticated/chat/$threadId")({
-  loader: ({ context, params }) => context.queryClient.ensureQueryData(messagesQuery(params.threadId)),
+  loader: ({ context, params }) =>
+    context.queryClient.ensureQueryData(messagesQuery(params.threadId)),
   component: ThreadPage,
 });
 
@@ -212,7 +220,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
   );
 });
 
-function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMessages: UIMessage[] }) {
+function ChatWindow({
+  threadId,
+  initialMessages,
+}: {
+  threadId: string;
+  initialMessages: UIMessage[];
+}) {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const transport = useMemo(
@@ -322,50 +336,42 @@ function ChatWindow({ threadId, initialMessages }: { threadId: string; initialMe
         {voice.phase !== "off" ? (
           <VoicePanel phase={voice.phase} onEnd={voice.end} />
         ) : (
-        <PromptInput
-          accept={ATTACH_ACCEPT}
-          multiple
-          globalDrop
-          maxFiles={MAX_IMAGES}
-          maxFileSize={MAX_IMAGE_BYTES}
-          onError={(e) =>
-            toast.error(
-              e.code === "max_files"
-                ? `Máximo ${MAX_IMAGES} archivos por mensaje.`
-                : e.code === "max_file_size"
-                  ? "Cada archivo debe pesar 5 MB o menos."
-                  : "Puedo leer imágenes, PDF y archivos de texto (TXT, CSV, código…).",
-            )
-          }
-          onSubmit={async ({ text, files }) => {
-            const t = text.trim();
-            if ((!t && files.length === 0) || busy) return;
-            try {
-              const uploaded = await uploadFiles(files);
-              sendMessage(t ? { text: t, files: uploaded } : { files: uploaded });
-            } catch (e) {
-              toast.error((e as Error).message);
-              throw e;
-            }
-          }}
-        >
-          <AttachmentPreviews />
-          <PromptInputTextarea ref={inputRef} autoFocus placeholder="Escribe a Capri..." />
-          <PromptInputFooter className="justify-between">
-            <div className="flex items-center gap-1">
-              <AttachButton />
-              <MicButton inputRef={inputRef} disabled={busy} />
-              <PromptInputButton
-                onClick={() => void voice.start()}
-                disabled={busy}
-                aria-label="Hablar con Capri"
-              >
-                <AudioLines className="size-5" />
-              </PromptInputButton>
-            </div>
-            <PromptInputSubmit status={status} onStop={stop} />
-          </PromptInputFooter>
-        </PromptInput>
+          <PromptInput
+            accept={ATTACH_ACCEPT}
+            multiple
+            globalDrop
+            maxFiles={MAX_IMAGES}
+            maxFileSize={MAX_IMAGE_BYTES}
+            onError={(e) => toast.error(e.message)}
+            onSubmit={async ({ text, files }) => {
+              const t = text.trim();
+              if ((!t && files.length === 0) || busy) return;
+              try {
+                const uploaded = await uploadFiles(files);
+                sendMessage(t ? { text: t, files: uploaded } : { files: uploaded });
+              } catch (e) {
+                toast.error((e as Error).message);
+                throw e;
+              }
+            }}
+          >
+            <AttachmentPreviews />
+            <PromptInputTextarea ref={inputRef} autoFocus placeholder="Escribe a Capri..." />
+            <PromptInputFooter className="justify-between">
+              <div className="flex items-center gap-1">
+                <AttachButton />
+                <MicButton inputRef={inputRef} disabled={busy} />
+                <PromptInputButton
+                  onClick={() => void voice.start()}
+                  disabled={busy}
+                  aria-label="Hablar con Capri"
+                >
+                  <AudioLines className="size-5" />
+                </PromptInputButton>
+              </div>
+              <PromptInputSubmit status={status} onStop={stop} />
+            </PromptInputFooter>
+          </PromptInput>
         )}
       </div>
     </div>
@@ -407,7 +413,12 @@ function ThreadBar({ threadId, messages }: { threadId: string; messages: UIMessa
       )}
       <Dialog open={projectOpen} onOpenChange={setProjectOpen}>
         <DialogTrigger asChild>
-          <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" disabled={!thread}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-muted-foreground"
+            disabled={!thread}
+          >
             <Folder className="size-4" />
             <span className="hidden sm:inline">Proyecto</span>
           </Button>
@@ -437,7 +448,9 @@ function ThreadBar({ threadId, messages }: { threadId: string; messages: UIMessa
               >
                 <Folder className="size-4 text-muted-foreground" />
                 <span className="flex-1 truncate">{p.name}</span>
-                {thread?.project_id === p.id && <span className="text-xs text-primary">Actual</span>}
+                {thread?.project_id === p.id && (
+                  <span className="text-xs text-primary">Actual</span>
+                )}
               </button>
             ))}
             {projects.length === 0 && (
@@ -461,7 +474,10 @@ function ThreadBar({ threadId, messages }: { threadId: string; messages: UIMessa
           }
         }}
         aria-label="Modelo de este chat"
-        title={CHAT_MODELS.find((model) => model.id === resolveChatModel(thread?.model))?.hint ?? CHAT_MODELS[0]?.hint}
+        title={
+          CHAT_MODELS.find((model) => model.id === resolveChatModel(thread?.model))?.hint ??
+          CHAT_MODELS[0]?.hint
+        }
         className="h-9 max-w-36 truncate rounded-md border bg-background px-2 text-sm"
       >
         {CHAT_MODELS.map((model) => (
@@ -514,8 +530,9 @@ async function uploadFiles(files: FileUIPart[]): Promise<FileUIPart[]> {
   const { data: auth } = await supabase.auth.getUser();
   const uid = auth.user?.id;
   if (!uid) throw new Error("Inicia sesión para enviar archivos.");
-  return Promise.all(
-    files.map(async (f) => {
+  return uploadBatchWithCleanup(
+    files,
+    async (f) => {
       const name = f.filename ?? "archivo";
       const kind = attachmentKind(f.mediaType, f.filename);
       if (!kind) throw new Error(`No puedo leer «${name}». Usa imágenes, PDF o archivos de texto.`);
@@ -524,7 +541,8 @@ async function uploadFiles(files: FileUIPart[]): Promise<FileUIPart[]> {
         const head = new Uint8Array(await blob.slice(0, 8192).arrayBuffer());
         if (head.includes(0)) throw new Error(`«${name}» no parece un archivo de texto.`);
       }
-      const mediaType = kind === "pdf" ? "application/pdf" : kind === "text" ? "text/plain" : f.mediaType;
+      const mediaType =
+        kind === "pdf" ? "application/pdf" : kind === "text" ? "text/plain" : f.mediaType;
       const ext =
         kind === "image"
           ? (f.mediaType.split("/")[1] ?? "png").replace("jpeg", "jpg")
@@ -532,12 +550,24 @@ async function uploadFiles(files: FileUIPart[]): Promise<FileUIPart[]> {
             ? "pdf"
             : "txt";
       const path = `${uid}/${crypto.randomUUID()}.${ext}`;
-      const { error } = await supabase.storage
-        .from(IMAGE_BUCKET)
-        .upload(path, blob, { contentType: kind === "text" ? "text/plain;charset=utf-8" : mediaType });
+      const { error } = await supabase.storage.from(IMAGE_BUCKET).upload(path, blob, {
+        contentType: kind === "text" ? "text/plain;charset=utf-8" : mediaType,
+      });
       if (error) throw new Error(`No se pudo subir «${name}».`);
-      return { type: "file" as const, mediaType, ...(f.filename ? { filename: f.filename } : {}), url: IMAGE_SCHEME + path };
-    }),
+      return {
+        path,
+        value: {
+          type: "file" as const,
+          mediaType,
+          ...(f.filename ? { filename: f.filename } : {}),
+          url: IMAGE_SCHEME + path,
+        },
+      };
+    },
+    async (paths) => {
+      const { error } = await supabase.storage.from(IMAGE_BUCKET).remove(paths);
+      if (error) throw new Error("Storage rechazó la limpieza de las cargas parciales.");
+    },
   );
 }
 
@@ -567,7 +597,9 @@ function SavedAttachment({ part }: { part: FileUIPart }) {
         className="flex min-h-11 max-w-64 items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-card-foreground"
       >
         <FileText className="size-5 shrink-0 text-primary" />
-        <span className="min-w-0 truncate">{part.filename ?? (kind === "pdf" ? "Documento PDF" : "Archivo")}</span>
+        <span className="min-w-0 truncate">
+          {part.filename ?? (kind === "pdf" ? "Documento PDF" : "Archivo")}
+        </span>
       </a>
     );
   }
@@ -625,7 +657,10 @@ function Sources({ parts }: { parts: UIMessage["parts"] }) {
 function AttachButton() {
   const att = usePromptInputAttachments();
   return (
-    <PromptInputButton onClick={() => att.openFileDialog()} aria-label="Adjuntar imagen o documento">
+    <PromptInputButton
+      onClick={() => att.openFileDialog()}
+      aria-label="Adjuntar imagen o documento"
+    >
       <Paperclip className="size-4" />
     </PromptInputButton>
   );
@@ -639,7 +674,11 @@ function AttachmentPreviews() {
       {att.files.map((f) => (
         <div key={f.id} className="relative">
           {attachmentKind(f.mediaType, f.filename) === "image" ? (
-            <img src={f.url} alt={f.filename ?? "Imagen"} className="size-16 rounded-md object-cover" />
+            <img
+              src={f.url}
+              alt={f.filename ?? "Imagen"}
+              className="size-16 rounded-md object-cover"
+            />
           ) : (
             <div className="flex h-16 w-36 items-center gap-2 rounded-md border bg-card px-2 text-xs">
               <FileText className="size-5 shrink-0 text-primary" />
@@ -694,7 +733,11 @@ function exportMarkdown(title: string, messages: UIMessage[]) {
     .join("\n\n---\n\n");
   const md = `# ${title}\n\n_Exportado el ${date}_\n\n${body}\n`;
   const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-  const name = (title.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "").slice(0, 50) || "conversacion") + ".md";
+  const name =
+    (title
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 50) || "conversacion") + ".md";
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -741,7 +784,9 @@ function EditMessage({
         aria-label="Editar mensaje"
       />
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <p className="mr-auto text-xs text-muted-foreground">Las respuestas que siguen se reemplazarán.</p>
+        <p className="mr-auto text-xs text-muted-foreground">
+          Las respuestas que siguen se reemplazarán.
+        </p>
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Cancelar
         </Button>
@@ -809,7 +854,8 @@ function useVoiceMode({
     tts.current?.abort();
     tts.current = null;
     spokenId.current = null;
-    if (latest.current.status === "submitted" || latest.current.status === "streaming") latest.current.stop();
+    if (latest.current.status === "submitted" || latest.current.status === "streaming")
+      latest.current.stop();
     setPhase("off");
   }, []);
 
@@ -951,7 +997,13 @@ function useSpeaker() {
   return { speakingId, loading, toggle, stop };
 }
 
-function MicButton({ inputRef, disabled }: { inputRef: RefObject<HTMLTextAreaElement | null>; disabled: boolean }) {
+function MicButton({
+  inputRef,
+  disabled,
+}: {
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  disabled: boolean;
+}) {
   const [state, setState] = useState<"idle" | "recording" | "transcribing">("idle");
   const rec = useRef<Recording | null>(null);
 
@@ -1016,10 +1068,23 @@ function MicButton({ inputRef, disabled }: { inputRef: RefObject<HTMLTextAreaEle
         <span className="min-w-[4.5rem] text-sm tabular-nums text-destructive" aria-live="polite">
           {fmt(seconds)} / {fmt(MAX_RECORDING_SECONDS)}
         </span>
-        <Button type="button" variant="ghost" size="icon" className="size-10 rounded-full" onClick={cancel} aria-label="Descartar dictado">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-10 rounded-full"
+          onClick={cancel}
+          aria-label="Descartar dictado"
+        >
           <X className="size-5" />
         </Button>
-        <Button type="button" size="icon" className="size-10 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void finish()} aria-label="Terminar y transcribir">
+        <Button
+          type="button"
+          size="icon"
+          className="size-10 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          onClick={() => void finish()}
+          aria-label="Terminar y transcribir"
+        >
           <Square className="size-4 fill-current" />
         </Button>
       </div>
@@ -1028,7 +1093,10 @@ function MicButton({ inputRef, disabled }: { inputRef: RefObject<HTMLTextAreaEle
 
   if (state === "transcribing") {
     return (
-      <span className="flex h-10 items-center gap-2 px-2 text-sm text-muted-foreground" aria-live="polite">
+      <span
+        className="flex h-10 items-center gap-2 px-2 text-sm text-muted-foreground"
+        aria-live="polite"
+      >
         <Loader2 className="size-4 animate-spin" /> Transcribiendo…
       </span>
     );
@@ -1075,13 +1143,18 @@ function VoicePanel({ phase, onEnd }: { phase: Exclude<VoicePhase, "off">; onEnd
 
 function ReadingBar({ loading, onStop }: { loading: boolean; onStop: () => void }) {
   return (
-    <div className="mb-2 flex items-center gap-3 rounded-full border bg-card py-1.5 pl-4 pr-1.5 shadow-lg" role="status">
+    <div
+      className="mb-2 flex items-center gap-3 rounded-full border bg-card py-1.5 pl-4 pr-1.5 shadow-lg"
+      role="status"
+    >
       {loading ? (
         <Loader2 className="size-4 animate-spin text-primary" />
       ) : (
         <Volume2 className="size-4 animate-pulse text-primary" />
       )}
-      <span className="flex-1 text-sm">{loading ? "Preparando audio…" : "Capri está leyendo…"}</span>
+      <span className="flex-1 text-sm">
+        {loading ? "Preparando audio…" : "Capri está leyendo…"}
+      </span>
       <Button type="button" size="sm" className="h-10 gap-1.5 rounded-full px-4" onClick={onStop}>
         <Square className="size-3.5 fill-current" /> Detener
       </Button>

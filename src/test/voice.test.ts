@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chunkText, getVoiceMode, pickSpanishVoice, setVoiceMode, speak, speakableText } from "@/lib/voice";
+import {
+  chunkText,
+  getVoiceMode,
+  pickSpanishVoice,
+  setVoiceMode,
+  speak,
+  speakableText,
+} from "@/lib/voice";
 import { MAX_SPEECH_CHARS } from "@/lib/voice-limits";
 
 vi.mock("@/integrations/supabase/client", () => ({
@@ -109,8 +116,13 @@ describe("voice mode", () => {
       { lang: "es-AR", name: "Argentino" },
     ] as SpeechSynthesisVoice[];
     expect(pickSpanishVoice(voices)?.lang).toBe("es-ES");
-    expect(pickSpanishVoice([{ lang: "es-MX", name: "Mexicano" }, ...voices] as SpeechSynthesisVoice[])?.lang).toBe("es-MX");
-    expect(pickSpanishVoice([{ lang: "en-US", name: "English" }] as SpeechSynthesisVoice[])).toBeNull();
+    expect(
+      pickSpanishVoice([{ lang: "es-MX", name: "Mexicano" }, ...voices] as SpeechSynthesisVoice[])
+        ?.lang,
+    ).toBe("es-MX");
+    expect(
+      pickSpanishVoice([{ lang: "en-US", name: "English" }] as SpeechSynthesisVoice[]),
+    ).toBeNull();
   });
 });
 
@@ -134,7 +146,7 @@ describe("phone voice", () => {
     expect(spoken.every((u) => u.voice?.lang === "es-MX")).toBe(true);
     expect(spoken.map((u) => u.text).join(" ")).toContain("Hola");
     expect(onStart).toHaveBeenCalledTimes(1);
-    delete (window as unknown as Record<string, unknown>).speechSynthesis;
+    delete (window as unknown as Record<string, unknown>)["speechSynthesis"];
   });
 
   it("stops the phone voice when aborted", async () => {
@@ -147,7 +159,7 @@ describe("phone voice", () => {
     await speak("Hola, ¿cómo estás?", controller.signal);
     expect(spoken.length).toBe(0);
     expect(isCancelled()).toBe(true);
-    delete (window as unknown as Record<string, unknown>).speechSynthesis;
+    delete (window as unknown as Record<string, unknown>)["speechSynthesis"];
   });
 
   it("falls back to the server voice when the device has no Spanish voice", async () => {
@@ -155,12 +167,18 @@ describe("phone voice", () => {
     vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
     Object.defineProperty(window, "speechSynthesis", { value: synth, configurable: true });
     vi.stubGlobal("AudioContext", FakeAudioContext);
-    const sse = 'data: {"type":"speech.audio.delta","audio":"AAAA"}\n\ndata: {"type":"speech.audio.done"}\n\n';
-    const fetchMock = vi.fn(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+    const sse =
+      'data: {"type":"speech.audio.delta","audio":"AAAA"}\n\ndata: {"type":"speech.audio.done"}\n\n';
+    const fetchMock = vi.fn(
+      async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     setVoiceMode("system");
     await speak("Hola.", new AbortController().signal);
-    expect(fetchMock).toHaveBeenCalledWith("/api/speech", expect.objectContaining({ method: "POST" }));
-    delete (window as unknown as Record<string, unknown>).speechSynthesis;
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/speech",
+      expect.objectContaining({ method: "POST" }),
+    );
+    delete (window as unknown as Record<string, unknown>)["speechSynthesis"];
   });
 });

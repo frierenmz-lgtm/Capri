@@ -12,7 +12,16 @@ import { buildSystemPrompt } from "./instructions";
 import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import {
+  ChatAttachmentLimitError,
+  type ChatAttachmentMetadataCache,
+  readChatAttachmentMetadata,
+  validateChatAttachment,
+  validateChatMessageAttachments,
+} from "./chat-attachment-limits.server";
+import { parseCustomChatModelConfig } from "./chat-model-config";
+import {
   IMAGE_BUCKET,
+  IMAGE_SCHEME,
   MAX_DOCUMENT_CHARS,
   attachmentKind,
   documentText,
@@ -51,7 +60,8 @@ export async function handleChat(request: Request) {
   const { supabase, userId } = auth;
 
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
-  if (declaredLength > MAX_CHAT_REQUEST_BYTES) return json(413, "La solicitud es demasiado grande.");
+  if (declaredLength > MAX_CHAT_REQUEST_BYTES)
+    return json(413, "La solicitud es demasiado grande.");
 
   const rawBody = await readBoundedBody(request, MAX_CHAT_REQUEST_BYTES);
   if (rawBody === null) return json(413, "La solicitud es demasiado grande.");
@@ -59,11 +69,27 @@ export async function handleChat(request: Request) {
   if (!body) return json(400, "Solicitud inválida o demasiado grande.");
   const { messages, threadId } = body;
 
-  const [{ data: thread }, { data: settings }, { data: memoryRows, error: memoryError }] = await Promise.all([
-    supabase.from("threads").select("id,title,custom_instructions,model,project_id").eq("id", threadId).maybeSingle(),
-    supabase.from("user_settings").select("default_instructions,memory_auto_enabled").eq("user_id", userId).maybeSingle(),
-    supabase.from("capri_memories").select("id,content,category,updated_at,importance,expires_at").eq("user_id", userId).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).order("importance", { ascending: false }).order("updated_at", { ascending: false }).limit(50),
-  ]);
+  const [{ data: thread }, { data: settings }, { data: memoryRows, error: memoryError }] =
+    await Promise.all([
+      supabase
+        .from("threads")
+        .select("id,title,custom_instructions,model,project_id")
+        .eq("id", threadId)
+        .maybeSingle(),
+      supabase
+        .from("user_settings")
+        .select("default_instructions,memory_auto_enabled")
+        .eq("user_id", userId)
+        .maybeSingle(),
+      supabase
+        .from("capri_memories")
+        .select("id,content,category,updated_at,importance,expires_at")
+        .eq("user_id", userId)
+        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+        .order("importance", { ascending: false })
+        .order("updated_at", { ascending: false })
+        .limit(50),
+    ]);
   if (!thread) return json(404, "Conversación no encontrada.");
   if (memoryError) console.error("load capri memories", memoryError);
   // A thread in a project uses the project's instructions (unless the thread has
@@ -78,52 +104,81 @@ export async function handleChat(request: Request) {
       ).data
     : null;
   const projectFileRows = project
-    ? (
+    ? ((
         await supabase
           .from("project_files")
           .select("id,name,storage_path,media_type,created_at")
           .eq("project_id", project.id)
           .order("created_at", { ascending: false })
-      ).data ?? []
+      ).data ?? [])
     : [];
-  const fallbackInstructions = pickFallbackInstructions(project?.instructions, settings?.default_instructions);
-  const latestUserText = messages.filter((m) => m.role === "user").slice(-1)[0]?.parts
-    .map((part) => part.type === "text" ? part.text : "").join(" ") ?? "";
+  const fallbackInstructions = pickFallbackInstructions(
+    project?.instructions,
+    settings?.default_instructions,
+  );
+  const latestUserText =
+    messages
+      .filter((m) => m.role === "user")
+      .slice(-1)[0]
+      ?.parts.map((part) => (part.type === "text" ? part.text : ""))
+      .join(" ") ?? "";
   const memories = selectRelevantMemories(memoryRows ?? [], latestUserText);
   const chatModelId = resolveChatModel(thread.model);
   const isCustomModel = chatModelId === CUSTOM_CHAT_MODEL_ID;
-  const system = buildSystemPrompt(thread.custom_instructions, fallbackInstructions, memories, !isCustomModel);
+  const system = buildSystemPrompt(
+    thread.custom_instructions,
+    fallbackInstructions,
+    memories,
+    !isCustomModel,
+  );
+
+  const apiKey = process.env["GROQ_API_KEY"];
+  if (!apiKey) return json(500, "Falta configurar la IA.");
+  const provider = createGroq({ apiKey });
+
+  // Validate custom model configuration before persisting the user's message.
+  let chatModel: LanguageModel;
+  if (isCustomModel) {
+    const customConfig = parseCustomChatModelConfig(
+      process.env["CAPRI_CUSTOM_MODEL_URL"],
+      process.env["CAPRI_CUSTOM_MODEL_KEY"],
+    );
+    if (!customConfig) return json(500, "El modelo de Capri no está configurado todavía.");
+    chatModel = asLanguageModel(
+      createOpenAI({ baseURL: customConfig.baseURL, apiKey: customConfig.apiKey })(
+        CUSTOM_CHAT_MODEL_NAME,
+      ),
+    );
+  } else {
+    chatModel = asLanguageModel(provider(chatModelId));
+  }
 
   const last = messages[messages.length - 1]!;
+  const preflightMetadataCache: ChatAttachmentMetadataCache = new Map();
   if (last.role === "user") {
+    try {
+      await validateChatMessageAttachments(supabase, userId, last, preflightMetadataCache);
+    } catch (e) {
+      const error = e instanceof Error ? e : new Error("No se pudo validar un archivo adjunto.");
+      const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
+      return json(status, error.message);
+    }
     const { error } = await saveUserMessage(supabase, threadId, userId, last);
     if (error) {
       console.error("save user message", error);
       return json(500, "No se pudo guardar tu mensaje.");
     }
     if (thread.title === "Nueva conversación") {
-      const text = last.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim();
-      if (text) await supabase.from("threads").update({ title: text.slice(0, 60) }).eq("id", threadId);
+      const text = last.parts
+        .map((p) => (p.type === "text" ? p.text : ""))
+        .join(" ")
+        .trim();
+      if (text)
+        await supabase
+          .from("threads")
+          .update({ title: text.slice(0, 60) })
+          .eq("id", threadId);
     }
-  }
-
-  const apiKey = process.env["GROQ_API_KEY"];
-  if (!apiKey) return json(500, "Falta configurar la IA.");
-
-  const provider = createGroq({ apiKey });
-
-  // The fine-tuned model runs on Modal, not Groq, behind an OpenAI-compatible
-  // API. Memory extraction and title generation below keep using the Groq
-  // provider and the big model.
-  // asLanguageModel bridges duplicate, compatible provider patch-version types.
-  let chatModel: LanguageModel;
-  if (isCustomModel) {
-    const customUrl = process.env["CAPRI_CUSTOM_MODEL_URL"];
-    const customKey = process.env["CAPRI_CUSTOM_MODEL_KEY"];
-    if (!customUrl || !customKey) return json(500, "El modelo de Capri no está configurado todavía.");
-    chatModel = asLanguageModel(createOpenAI({ baseURL: customUrl, apiKey: customKey })(CUSTOM_CHAT_MODEL_NAME));
-  } else {
-    chatModel = asLanguageModel(provider(chatModelId));
   }
 
   // Trim first so attachments in discarded messages are never downloaded.
@@ -132,18 +187,31 @@ export async function handleChat(request: Request) {
     modelMessages = await resolveTrimmedAttachments(supabase, userId, messages);
   } catch (e) {
     console.error("resolve attachments", e);
-    return json(400, (e as Error).message || "No se pudo leer un archivo adjunto.");
+    const error = e instanceof Error ? e : new Error("No se pudo leer un archivo adjunto.");
+    const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
+    return json(status, error.message || "No se pudo leer un archivo adjunto.");
   }
 
   // Project files ride along as a leading message (never saved): the model sees
   // them on every turn of a thread that belongs to a project.
   let contextMessages: UIMessage[] = modelMessages;
   if (project) {
-    const { parts, omitted, cut } = await projectContextParts(supabase, userId, projectFileRows);
+    let projectParts: Awaited<ReturnType<typeof projectContextParts>>;
+    try {
+      projectParts = await projectContextParts(supabase, userId, projectFileRows);
+    } catch (e) {
+      console.error("project context files", e);
+      const error = e instanceof Error ? e : new Error("No se pudo leer un archivo del proyecto.");
+      const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
+      return json(status, error.message || "No se pudo leer un archivo del proyecto.");
+    }
+    const { parts, omitted, cut } = projectParts;
     if (parts.length > 0) {
       const note = [
         `Archivos del proyecto «${project.name}». Úsalos como contexto para responder.`,
-        omitted > 0 ? `Se incluyen los ${parts.length} más recientes; el proyecto tiene ${omitted} más.` : "",
+        omitted > 0
+          ? `Se incluyen los ${parts.length} más recientes; el proyecto tiene ${omitted} más.`
+          : "",
         cut ? "Algunos archivos se recortaron por longitud." : "",
       ]
         .filter(Boolean)
@@ -212,11 +280,15 @@ export async function handleChat(request: Request) {
       try {
         const latestUser = messages.filter((message) => message.role === "user").slice(-1)[0];
         const userText = latestUser ? textOf(latestUser) : "";
-        if (settings?.memory_auto_enabled !== false && userText.length >= 24) await extractAndSaveMemories(provider, supabase, userId, userText);
+        if (settings?.memory_auto_enabled !== false && userText.length >= 24)
+          await extractAndSaveMemories(provider, supabase, userId, userText);
       } catch (e) {
         console.error("automatic memory extraction", e);
       }
-      await supabase.from("threads").update({ updated_at: new Date().toISOString() }).eq("id", threadId);
+      await supabase
+        .from("threads")
+        .update({ updated_at: new Date().toISOString() })
+        .eq("id", threadId);
       const userTurns = messages.filter((m) => m.role === "user").length;
       if (userTurns === 1) {
         try {
@@ -232,9 +304,12 @@ export async function handleChat(request: Request) {
   return response;
 }
 
-
-
-type ExtractedMemory = { category: "preferencia" | "proyecto" | "objetivo" | "contexto" | "otro"; content: string; importance: number; expiresInDays: number | null };
+type ExtractedMemory = {
+  category: "preferencia" | "proyecto" | "objetivo" | "contexto" | "otro";
+  content: string;
+  importance: number;
+  expiresInDays: number | null;
+};
 
 async function extractAndSaveMemories(
   provider: ReturnType<typeof createGroq>,
@@ -248,21 +323,31 @@ async function extractAndSaveMemories(
     prompt: `Mensaje del usuario:\n${userText.slice(0, 3000)}`,
     maxOutputTokens: 500,
   });
-  const raw = (await result.text).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const raw = (await result.text)
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
   const parsed = JSON.parse(raw) as { memories?: ExtractedMemory[] };
   if (!Array.isArray(parsed.memories)) return;
   const allowed = new Set(["preferencia", "proyecto", "objetivo", "contexto", "otro"]);
-  const { data: existing } = await supabase.from("capri_memories").select("id,category,content,source").eq("user_id", userId).order("updated_at", { ascending: false }).limit(100);
+  const { data: existing } = await supabase
+    .from("capri_memories")
+    .select("id,category,content,source")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(100);
   for (const item of parsed.memories.slice(0, 3)) {
     if (!allowed.has(item.category) || typeof item.content !== "string") continue;
     const content = item.content.trim().slice(0, 500);
     if (content.length < 12) continue;
     const importance = Math.max(1, Math.min(5, Math.round(Number(item.importance) || 3)));
     const days = item.expiresInDays;
-    const expiresAt = typeof days === "number" && days >= 7 && days <= 365
-      ? new Date(Date.now() + days * 86400000).toISOString()
-      : null;
-    const words = (value: string) => new Set(value.toLocaleLowerCase("es-MX").match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+    const expiresAt =
+      typeof days === "number" && days >= 7 && days <= 365
+        ? new Date(Date.now() + days * 86400000).toISOString()
+        : null;
+    const words = (value: string) =>
+      new Set(value.toLocaleLowerCase("es-MX").match(/[\p{L}\p{N}]{4,}/gu) ?? []);
     const nextWords = words(content);
     const duplicate = (existing ?? []).find((row) => {
       if (row.category !== item.category) return false;
@@ -272,16 +357,45 @@ async function extractAndSaveMemories(
     });
     if (duplicate?.source === "manual") continue;
     if (duplicate) {
-      await supabase.from("capri_memories").update({ content, importance, expires_at: expiresAt, updated_at: new Date().toISOString() }).eq("id", duplicate.id).eq("user_id", userId);
+      await supabase
+        .from("capri_memories")
+        .update({
+          content,
+          importance,
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", duplicate.id)
+        .eq("user_id", userId);
     } else {
-      await supabase.from("capri_memories").insert({ user_id: userId, category: item.category, content, importance, expires_at: expiresAt, source: "automatic" });
+      await supabase.from("capri_memories").insert({
+        user_id: userId,
+        category: item.category,
+        content,
+        importance,
+        expires_at: expiresAt,
+        source: "automatic",
+      });
     }
   }
   // Keep the table bounded; manual memories are preserved before automatic ones.
-  const { data: all } = await supabase.from("capri_memories").select("id,source,importance,updated_at").eq("user_id", userId).order("importance", { ascending: true }).order("updated_at", { ascending: true });
+  const { data: all } = await supabase
+    .from("capri_memories")
+    .select("id,source,importance,updated_at")
+    .eq("user_id", userId)
+    .order("importance", { ascending: true })
+    .order("updated_at", { ascending: true });
   if (all && all.length > 120) {
     const removable = all.filter((row) => row.source === "automatic").slice(0, all.length - 120);
-    if (removable.length) await supabase.from("capri_memories").delete().eq("user_id", userId).in("id", removable.map((row) => row.id));
+    if (removable.length)
+      await supabase
+        .from("capri_memories")
+        .delete()
+        .eq("user_id", userId)
+        .in(
+          "id",
+          removable.map((row) => row.id),
+        );
   }
 }
 
@@ -322,7 +436,7 @@ async function readBoundedBody(request: Request, maxBytes: number): Promise<stri
  * text blocks (sharing one character budget), images and PDFs become inline data.
  * Files that can't be read are skipped; the caller notes what was left out.
  */
-async function projectContextParts(
+export async function projectContextParts(
   supabase: UserClient,
   userId: string,
   files: { name: string; storage_path: string; media_type: string; created_at: string }[],
@@ -330,11 +444,30 @@ async function projectContextParts(
   const selected = selectProjectFiles(files);
   const texts: { name: string; text: string }[] = [];
   const media: UIMessage["parts"][number][] = [];
-  for (const file of selected) {
-    if (!ownsImagePath(file.storage_path, userId)) continue;
-    const kind = attachmentKind(file.media_type, file.name);
-    if (!kind) continue;
-    const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(file.storage_path);
+  const metadataCache: ChatAttachmentMetadataCache = new Map();
+  const validated = await Promise.all(
+    selected
+      .filter((file) => ownsImagePath(file.storage_path, userId))
+      .flatMap((file) => {
+        const kind = attachmentKind(file.media_type, file.name);
+        if (!kind) return [];
+        return [
+          validateChatAttachment(
+            supabase,
+            userId,
+            {
+              type: "file",
+              mediaType: file.media_type,
+              filename: file.name,
+              url: `${IMAGE_SCHEME}${file.storage_path}`,
+            },
+            metadataCache,
+          ).then((path) => ({ file, kind, path })),
+        ];
+      }),
+  );
+  for (const { file, kind, path } of validated) {
+    const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
     if (error || !data) continue;
     if (kind === "text") {
       texts.push({ name: file.name, text: await data.text() });
@@ -345,12 +478,19 @@ async function projectContextParts(
         bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       }
       const mediaType = kind === "pdf" ? "application/pdf" : file.media_type;
-      media.push({ type: "file", mediaType, filename: file.name, url: `data:${mediaType};base64,${btoa(bin)}` });
+      media.push({
+        type: "file",
+        mediaType,
+        filename: file.name,
+        url: `data:${mediaType};base64,${btoa(bin)}`,
+      });
     }
   }
   const budgeted = budgetProjectTexts(texts);
   const parts: UIMessage["parts"] = [
-    ...budgeted.filter((t) => t.text).map((t) => ({ type: "text" as const, text: projectFileText(t.name, t.text) })),
+    ...budgeted
+      .filter((t) => t.text)
+      .map((t) => ({ type: "text" as const, text: projectFileText(t.name, t.text) })),
     ...media,
   ];
   return { parts, omitted: files.length - selected.length, cut: budgeted.some((t) => t.cut) };
@@ -365,37 +505,45 @@ async function resolveAttachments(
   userId: string,
   messages: UIMessage[],
   cache: Map<string, UIMessage["parts"][number]> = new Map(),
+  metadataCache: ChatAttachmentMetadataCache = new Map(),
 ): Promise<UIMessage[]> {
   return Promise.all(
-    messages.map(async (m) => ({
-      ...m,
-      parts: await Promise.all(
-        m.parts.map(async (p) => {
-          if (p.type !== "file") return p;
-          const path = imagePath(p.url);
-          const kind = attachmentKind(p.mediaType, p.filename);
-          if (!path || !kind || !ownsImagePath(path, userId)) throw new Error("Archivo adjunto no válido.");
-          const cached = cache.get(path);
-          if (cached) return cached;
-          const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
-          if (error || !data) throw new Error("No se pudo leer un archivo adjunto.");
-          let resolved: UIMessage["parts"][number];
-          if (kind === "text") {
-            resolved = { type: "text", text: documentText(p.filename ?? "archivo.txt", await data.text()) };
-          } else {
-            const bytes = new Uint8Array(await data.arrayBuffer());
-            let bin = "";
-            for (let i = 0; i < bytes.length; i += 0x8000) {
-              bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    messages.map(async (m) => {
+      // Check every retained file's metadata before starting any body downloads for this message.
+      await validateChatMessageAttachments(supabase, userId, m, metadataCache);
+
+      return {
+        ...m,
+        parts: await Promise.all(
+          m.parts.map(async (p) => {
+            if (p.type !== "file") return p;
+            const path = await validateChatAttachment(supabase, userId, p, metadataCache);
+            const kind = attachmentKind(p.mediaType, p.filename)!;
+            const cached = cache.get(path);
+            if (cached) return cached;
+            const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
+            if (error || !data) throw new Error("No se pudo leer un archivo adjunto.");
+            let resolved: UIMessage["parts"][number];
+            if (kind === "text") {
+              resolved = {
+                type: "text",
+                text: documentText(p.filename ?? "archivo.txt", await data.text()),
+              };
+            } else {
+              const bytes = new Uint8Array(await data.arrayBuffer());
+              let bin = "";
+              for (let i = 0; i < bytes.length; i += 0x8000) {
+                bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+              }
+              const mediaType = kind === "pdf" ? "application/pdf" : p.mediaType;
+              resolved = { ...p, mediaType, url: `data:${mediaType};base64,${btoa(bin)}` };
             }
-            const mediaType = kind === "pdf" ? "application/pdf" : p.mediaType;
-            resolved = { ...p, mediaType, url: `data:${mediaType};base64,${btoa(bin)}` };
-          }
-          cache.set(path, resolved);
-          return resolved;
-        }),
-      ),
-    })),
+            cache.set(path, resolved);
+            return resolved;
+          }),
+        ),
+      };
+    }),
   );
 }
 
@@ -406,6 +554,7 @@ async function textAttachmentsCannotFit(
   message: UIMessage,
   availableChars: number,
   cache: Map<string, UIMessage["parts"][number]>,
+  metadataCache: ChatAttachmentMetadataCache,
 ): Promise<boolean> {
   let minimumCost = 0;
   for (const part of message.parts) {
@@ -417,22 +566,9 @@ async function textAttachmentsCannotFit(
     if (cached) {
       minimumCost += partCost(cached);
     } else {
-      const pathParts = path.split("/");
-      const folder = pathParts[0]!;
-      const filename = pathParts[1]!;
-      let metadata;
-      try {
-        metadata = await supabase.storage
-          .from(IMAGE_BUCKET)
-          .list(folder, { search: filename, limit: 100 });
-      } catch {
-        return false;
-      }
-      const { data, error } = metadata;
-      const file = data?.find((entry) => entry.id !== null && entry.name === filename);
-      const size = file?.metadata?.size;
-      if (error || typeof size !== "number" || !Number.isFinite(size) || size < 0) return false;
-      const contentEncoding = file?.metadata?.["contentEncoding"];
+      const metadata = await readChatAttachmentMetadata(supabase, path, metadataCache);
+      if (!metadata) return false;
+      const { size, contentEncoding } = metadata;
       if (
         typeof contentEncoding === "string" &&
         contentEncoding &&
@@ -458,12 +594,14 @@ export async function resolveTrimmedAttachments(
   supabase: UserClient,
   userId: string,
   messages: UIMessage[],
+  metadataCache: ChatAttachmentMetadataCache = new Map(),
 ): Promise<UIMessage[]> {
   const retained: UIMessage[] = [];
   const cache = new Map<string, UIMessage["parts"][number]>();
   let total = 0;
   let omittedOlderAttachments = false;
-  const hasAttachment = (candidate: UIMessage) => candidate.parts.some((part) => part.type === "file");
+  const hasAttachment = (candidate: UIMessage) =>
+    candidate.parts.some((part) => part.type === "file");
 
   // Work backwards so a large recent text attachment can stop history loading
   // before attachments in older messages are downloaded.
@@ -487,13 +625,20 @@ export async function resolveTrimmedAttachments(
     if (
       i < messages.length - 1 &&
       hasTextAttachment &&
-      (await textAttachmentsCannotFit(supabase, userId, message, availableChars, cache))
+      (await textAttachmentsCannotFit(
+        supabase,
+        userId,
+        message,
+        availableChars,
+        cache,
+        metadataCache,
+      ))
     ) {
       omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
       break;
     }
 
-    const [resolved] = await resolveAttachments(supabase, userId, [message], cache);
+    const [resolved] = await resolveAttachments(supabase, userId, [message], cache, metadataCache);
     const cost = messageCost(resolved!);
     if (i === messages.length - 1 && cost > MAX_HISTORY_CHARS) {
       retained.unshift(resolved!);
@@ -531,14 +676,21 @@ export async function resolveTrimmedAttachments(
 }
 
 const textOf = (m: UIMessage) =>
-  m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim().slice(0, 1500);
+  m.parts
+    .map((p) => (p.type === "text" ? p.text : ""))
+    .join(" ")
+    .trim()
+    .slice(0, 1500);
 
 async function generateTitle(
   provider: ReturnType<typeof createGroq>,
   messages: UIMessage[],
   reply: UIMessage,
 ) {
-  const user = messages.filter((m) => m.role === "user").map(textOf).join("\n");
+  const user = messages
+    .filter((m) => m.role === "user")
+    .map(textOf)
+    .join("\n");
   const result = streamText({
     model: asLanguageModel(provider(DEFAULT_CHAT_MODEL)),
     instructions:
@@ -554,7 +706,12 @@ async function generateTitle(
  * A new message is inserted. A message that is already saved means the user edited it
  * or asked for a new reply: its text is updated and everything after it is dropped.
  */
-async function saveUserMessage(supabase: UserClient, threadId: string, userId: string, msg: UIMessage) {
+async function saveUserMessage(
+  supabase: UserClient,
+  threadId: string,
+  userId: string,
+  msg: UIMessage,
+) {
   const { data: existing, error: findError } = await supabase
     .from("messages")
     .select("created_at")
@@ -563,13 +720,25 @@ async function saveUserMessage(supabase: UserClient, threadId: string, userId: s
     .maybeSingle();
   if (findError) return { error: findError };
   if (!existing) {
-    return supabase
-      .from("messages")
-      .insert({ thread_id: threadId, user_id: userId, message_id: msg.id, role: "user", parts: msg.parts as never });
+    return supabase.from("messages").insert({
+      thread_id: threadId,
+      user_id: userId,
+      message_id: msg.id,
+      role: "user",
+      parts: msg.parts as never,
+    });
   }
   const [updated, removed] = await Promise.all([
-    supabase.from("messages").update({ parts: msg.parts as never }).eq("thread_id", threadId).eq("message_id", msg.id),
-    supabase.from("messages").delete().eq("thread_id", threadId).gt("created_at", existing.created_at),
+    supabase
+      .from("messages")
+      .update({ parts: msg.parts as never })
+      .eq("thread_id", threadId)
+      .eq("message_id", msg.id),
+    supabase
+      .from("messages")
+      .delete()
+      .eq("thread_id", threadId)
+      .gt("created_at", existing.created_at),
   ]);
   return { error: updated.error ?? removed.error };
 }

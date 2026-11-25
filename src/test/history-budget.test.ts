@@ -11,7 +11,11 @@ const text = (id: string, role: UIMessage["role"], chars: number): UIMessage => 
 
 describe("trimHistory", () => {
   it("conserva solo los mensajes recientes que caben en el presupuesto", () => {
-    const messages = [text("a", "user", 6_000), text("b", "assistant", 6_000), text("c", "user", 6_000)];
+    const messages = [
+      text("a", "user", 6_000),
+      text("b", "assistant", 6_000),
+      text("c", "user", 6_000),
+    ];
     const out = trimHistory(messages);
     expect(out.map((m) => m.id)).toEqual(["b", "c"]);
   });
@@ -38,7 +42,13 @@ describe("trimHistory", () => {
     const withImage: UIMessage = {
       id: "img",
       role: "user",
-      parts: [{ type: "file", mediaType: "image/png", url: `data:image/png;base64,${"A".repeat(100_000)}` }],
+      parts: [
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: `data:image/png;base64,${"A".repeat(100_000)}`,
+        },
+      ],
     };
     expect(messageCost(withImage)).toBe(1_000);
     const messages = [text("a", "user", MAX_HISTORY_CHARS - 1_000), withImage];
@@ -133,7 +143,15 @@ describe("trimHistory", () => {
     const m: UIMessage = {
       id: "t",
       role: "assistant",
-      parts: [{ type: "tool-web_search", toolCallId: "1", state: "output-available", input: { query: "x" }, output: "y" } as UIMessage["parts"][number]],
+      parts: [
+        {
+          type: "tool-web_search",
+          toolCallId: "1",
+          state: "output-available",
+          input: { query: "x" },
+          output: "y",
+        } as UIMessage["parts"][number],
+      ],
     };
     expect(messageCost(m)).toBe(0);
   });

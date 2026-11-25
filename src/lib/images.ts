@@ -11,14 +11,58 @@ export const DOCUMENT_ATTACHMENT_PREFIX = "Archivo adjunto: ";
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 export const TEXT_EXTENSIONS = [
-  "txt", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml", "toml", "ini", "log",
-  "html", "htm", "css", "scss", "js", "jsx", "mjs", "ts", "tsx", "py", "java", "kt", "swift",
-  "c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "sh", "bash", "sql", "r", "lua", "dart", "vue", "svelte",
+  "txt",
+  "md",
+  "markdown",
+  "csv",
+  "tsv",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "log",
+  "html",
+  "htm",
+  "css",
+  "scss",
+  "js",
+  "jsx",
+  "mjs",
+  "ts",
+  "tsx",
+  "py",
+  "java",
+  "kt",
+  "swift",
+  "c",
+  "h",
+  "cpp",
+  "hpp",
+  "cs",
+  "go",
+  "rs",
+  "rb",
+  "php",
+  "sh",
+  "bash",
+  "sql",
+  "r",
+  "lua",
+  "dart",
+  "vue",
+  "svelte",
 ];
 
 export const IMAGE_ACCEPT = IMAGE_TYPES.join(",");
 /** What the attach button and drop zone allow: images, PDFs and plain-text files (by type or extension). */
-export const ATTACH_ACCEPT = [...IMAGE_TYPES, "application/pdf", "text/*", ...TEXT_EXTENSIONS.map((e) => `.${e}`)].join(",");
+export const ATTACH_ACCEPT = [
+  ...IMAGE_TYPES,
+  "application/pdf",
+  "text/*",
+  ...TEXT_EXTENSIONS.map((e) => `.${e}`),
+].join(",");
 
 export type AttachmentKind = "image" | "pdf" | "text";
 
@@ -41,7 +85,9 @@ export function attachmentKind(mediaType: string, filename?: string | null): Att
 export function documentText(filename: string, content: string): string {
   const cut = content.length > MAX_DOCUMENT_CHARS;
   const body = cut ? content.slice(0, MAX_DOCUMENT_CHARS) : content;
-  const note = cut ? `[El archivo es más largo; solo se incluyen los primeros ${MAX_DOCUMENT_CHARS} caracteres.]\n` : "";
+  const note = cut
+    ? `[El archivo es más largo; solo se incluyen los primeros ${MAX_DOCUMENT_CHARS} caracteres.]\n`
+    : "";
   return `${DOCUMENT_ATTACHMENT_PREFIX}${filename}\n${note}<<<\n${body}\n>>>`;
 }
 
@@ -57,5 +103,7 @@ export function ownsImagePath(path: string, userId: string): boolean {
 }
 
 export function isImagePart(p: { type: string; mediaType?: string }): p is FileUIPart {
-  return p.type === "file" && attachmentKind(p.mediaType ?? "", (p as FileUIPart).filename) === "image";
+  return (
+    p.type === "file" && attachmentKind(p.mediaType ?? "", (p as FileUIPart).filename) === "image"
+  );
 }
