@@ -14,6 +14,12 @@ describe("custom instructions", () => {
     expect(buildSystemPrompt("", null)).toBe(BASE_SYSTEM);
   });
 
+  it("omits web-search instructions when the selected model has no search tool", () => {
+    const prompt = buildSystemPrompt("", null, undefined, false);
+    expect(prompt).not.toContain("Puedes buscar en la web");
+    expect(prompt).toContain("Si el usuario adjunta documentos, básate en su contenido.");
+  });
+
   it("caps instructions at 2000 characters", () => {
     expect(pickInstructions("a".repeat(2500), "")).toHaveLength(MAX_INSTRUCTIONS);
   });

@@ -1,15 +1,49 @@
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
-import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  stepCountIs,
+  streamText,
+  type LanguageModel,
+  type UIMessage,
+} from "ai";
 import { authenticate, json, type UserClient } from "./auth-request.server";
 import { buildSystemPrompt } from "./instructions";
 import { selectRelevantMemories } from "./memory";
 import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
-import { IMAGE_BUCKET, attachmentKind, documentText, imagePath, ownsImagePath } from "./images";
+import {
+  IMAGE_BUCKET,
+  MAX_DOCUMENT_CHARS,
+  attachmentKind,
+  documentText,
+  imagePath,
+  ownsImagePath,
+} from "./images";
 import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from "./web-search";
-import { CUSTOM_CHAT_MODEL_ID, CUSTOM_CHAT_MODEL_NAME, DEFAULT_CHAT_MODEL, resolveChatModel } from "./models";
-import { budgetProjectTexts, pickFallbackInstructions, projectFileText, selectProjectFiles } from "./project-context";
-import { trimHistory } from "./history-budget";
+import {
+  CUSTOM_CHAT_MODEL_ID,
+  CUSTOM_CHAT_MODEL_NAME,
+  DEFAULT_CHAT_MODEL,
+  resolveChatModel,
+} from "./models";
+import {
+  budgetProjectTexts,
+  pickFallbackInstructions,
+  projectFileText,
+  selectProjectFiles,
+} from "./project-context";
+import {
+  MAX_HISTORY_CHARS,
+  messageCost,
+  OLDER_ATTACHMENT_HISTORY_NOTE,
+  partCost,
+  retainRecentMessagesWithinBudget,
+  trimMessageToBudget,
+} from "./history-budget";
+
+// The Groq/OpenAI adapters and `ai` currently resolve compatible V4 model
+// interfaces from different @ai-sdk/provider patch versions.
+const asLanguageModel = (model: unknown): LanguageModel => model as LanguageModel;
 
 export async function handleChat(request: Request) {
   const auth = await authenticate(request);
@@ -81,31 +115,25 @@ export async function handleChat(request: Request) {
   // The fine-tuned model runs on Modal, not Groq, behind an OpenAI-compatible
   // API. Memory extraction and title generation below keep using the Groq
   // provider and the big model.
-  // Both providers return the same model type; the streamText call below
-  // carries the same pre-existing provider type mismatch as the Groq-only
-  // calls in extractAndSaveMemories and generateTitle.
-  let chatModel: ReturnType<ReturnType<typeof createGroq>>;
+  // asLanguageModel bridges duplicate, compatible provider patch-version types.
+  let chatModel: LanguageModel;
   if (isCustomModel) {
     const customUrl = process.env["CAPRI_CUSTOM_MODEL_URL"];
     const customKey = process.env["CAPRI_CUSTOM_MODEL_KEY"];
     if (!customUrl || !customKey) return json(500, "El modelo de Capri no está configurado todavía.");
-    chatModel = createOpenAI({ baseURL: customUrl, apiKey: customKey })(CUSTOM_CHAT_MODEL_NAME);
+    chatModel = asLanguageModel(createOpenAI({ baseURL: customUrl, apiKey: customKey })(CUSTOM_CHAT_MODEL_NAME));
   } else {
-    chatModel = provider(chatModelId);
+    chatModel = asLanguageModel(provider(chatModelId));
   }
 
+  // Trim first so attachments in discarded messages are never downloaded.
   let modelMessages: UIMessage[];
   try {
-    modelMessages = await resolveAttachments(supabase, userId, messages);
+    modelMessages = await resolveTrimmedAttachments(supabase, userId, messages);
   } catch (e) {
     console.error("resolve attachments", e);
     return json(400, (e as Error).message || "No se pudo leer un archivo adjunto.");
   }
-
-  // The whole thread used to go to the model on every turn; cap the history so
-  // input tokens stop growing with the conversation. The project-files message
-  // below is added after the trim, so its own 24,000-char budget is untouched.
-  modelMessages = trimHistory(modelMessages);
 
   // Project files ride along as a leading message (never saved): the model sees
   // them on every turn of a thread that belongs to a project.
@@ -215,7 +243,7 @@ async function extractAndSaveMemories(
   userText: string,
 ) {
   const result = await streamText({
-    model: provider(DEFAULT_CHAT_MODEL),
+    model: asLanguageModel(provider(DEFAULT_CHAT_MODEL)),
     instructions: `Extrae de lo que el usuario acaba de decir entre cero y tres recuerdos útiles para futuras conversaciones. Devuelve exclusivamente un JSON válido con la forma {"memories":[{"category":"preferencia|proyecto|objetivo|contexto|otro","content":"...","importance":1,"expiresInDays":null}]}. Guarda solo información explícita, estable y útil: preferencias de respuesta, proyectos, objetivos y contexto de trabajo. No guardes datos sensibles (salud, religión, política, sexualidad, datos financieros privados), secretos, contraseñas, datos de terceros, información pasajera ni suposiciones. No conviertas preguntas o hipótesis en hechos. Cada recuerdo debe ser una frase breve, en primera persona cuando corresponda, máximo 300 caracteres. importance va de 1 a 5. expiresInDays es null para recuerdos duraderos o un número de 7 a 365 para datos temporales. Si no hay nada claro, devuelve {"memories":[]}.`,
     prompt: `Mensaje del usuario:\n${userText.slice(0, 3000)}`,
     maxOutputTokens: 500,
@@ -336,8 +364,8 @@ async function resolveAttachments(
   supabase: UserClient,
   userId: string,
   messages: UIMessage[],
+  cache: Map<string, UIMessage["parts"][number]> = new Map(),
 ): Promise<UIMessage[]> {
-  const cache = new Map<string, UIMessage["parts"][number]>();
   return Promise.all(
     messages.map(async (m) => ({
       ...m,
@@ -371,6 +399,137 @@ async function resolveAttachments(
   );
 }
 
+/** Uses object metadata only when it can prove a text attachment cannot fit. */
+async function textAttachmentsCannotFit(
+  supabase: UserClient,
+  userId: string,
+  message: UIMessage,
+  availableChars: number,
+  cache: Map<string, UIMessage["parts"][number]>,
+): Promise<boolean> {
+  let minimumCost = 0;
+  for (const part of message.parts) {
+    if (part.type !== "file" || attachmentKind(part.mediaType, part.filename) !== "text") continue;
+    const path = imagePath(part.url);
+    if (!path || !ownsImagePath(path, userId)) return false;
+
+    const cached = cache.get(path);
+    if (cached) {
+      minimumCost += partCost(cached);
+    } else {
+      const pathParts = path.split("/");
+      const folder = pathParts[0]!;
+      const filename = pathParts[1]!;
+      let metadata;
+      try {
+        metadata = await supabase.storage
+          .from(IMAGE_BUCKET)
+          .list(folder, { search: filename, limit: 100 });
+      } catch {
+        return false;
+      }
+      const { data, error } = metadata;
+      const file = data?.find((entry) => entry.id !== null && entry.name === filename);
+      const size = file?.metadata?.size;
+      if (error || typeof size !== "number" || !Number.isFinite(size) || size < 0) return false;
+      const contentEncoding = file?.metadata?.["contentEncoding"];
+      if (
+        typeof contentEncoding === "string" &&
+        contentEncoding &&
+        contentEncoding.toLowerCase() !== "identity"
+      ) {
+        return false;
+      }
+
+      // Chat uploads use UTF-8 without content encoding. At most four bytes
+      // encode one Unicode scalar (with up to three bytes for a stripped BOM),
+      // giving a safe lower bound when contentEncoding is absent or identity.
+      const minimumBodyChars = Math.ceil(Math.max(0, size - 3) / 4);
+      const wrapperChars = documentText(part.filename ?? "archivo.txt", "").length;
+      minimumCost += wrapperChars + Math.min(minimumBodyChars, MAX_DOCUMENT_CHARS);
+    }
+
+    if (minimumCost > availableChars) return true;
+  }
+  return false;
+}
+
+export async function resolveTrimmedAttachments(
+  supabase: UserClient,
+  userId: string,
+  messages: UIMessage[],
+): Promise<UIMessage[]> {
+  const retained: UIMessage[] = [];
+  const cache = new Map<string, UIMessage["parts"][number]>();
+  let total = 0;
+  let omittedOlderAttachments = false;
+  const hasAttachment = (candidate: UIMessage) => candidate.parts.some((part) => part.type === "file");
+
+  // Work backwards so a large recent text attachment can stop history loading
+  // before attachments in older messages are downloaded.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    const knownCost = message.parts.reduce((sum, part) => {
+      if (part.type !== "file") return sum + partCost(part);
+      return sum + (attachmentKind(part.mediaType, part.filename) === "text" ? 0 : partCost(part));
+    }, 0);
+    const hasTextAttachment = message.parts.some(
+      (part) => part.type === "file" && attachmentKind(part.mediaType, part.filename) === "text",
+    );
+    const cannotFit =
+      total + knownCost > MAX_HISTORY_CHARS ||
+      (total + knownCost === MAX_HISTORY_CHARS && hasTextAttachment);
+    if (i < messages.length - 1 && cannotFit) {
+      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      break;
+    }
+    const availableChars = MAX_HISTORY_CHARS - total - knownCost;
+    if (
+      i < messages.length - 1 &&
+      hasTextAttachment &&
+      (await textAttachmentsCannotFit(supabase, userId, message, availableChars, cache))
+    ) {
+      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      break;
+    }
+
+    const [resolved] = await resolveAttachments(supabase, userId, [message], cache);
+    const cost = messageCost(resolved!);
+    if (i === messages.length - 1 && cost > MAX_HISTORY_CHARS) {
+      retained.unshift(resolved!);
+      omittedOlderAttachments = messages.slice(0, i).some(hasAttachment);
+      break;
+    }
+    if (i < messages.length - 1 && total + cost > MAX_HISTORY_CHARS) {
+      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      break;
+    }
+
+    retained.unshift(resolved!);
+    total += cost;
+  }
+
+  if (retained.length === 0) return retained;
+  if (omittedOlderAttachments && OLDER_ATTACHMENT_HISTORY_NOTE.length <= MAX_HISTORY_CHARS) {
+    // Reserve the complete warning before keeping prior messages in the prompt.
+    const reservedHistory = retainRecentMessagesWithinBudget(
+      retained,
+      MAX_HISTORY_CHARS - OLDER_ATTACHMENT_HISTORY_NOTE.length,
+    );
+    retained.splice(0, retained.length, ...reservedHistory);
+  }
+  const lastIndex = retained.length - 1;
+  const otherCost = retained
+    .slice(0, lastIndex)
+    .reduce((sum, message) => sum + messageCost(message), 0);
+  retained[lastIndex] = trimMessageToBudget(
+    retained[lastIndex]!,
+    Math.max(0, MAX_HISTORY_CHARS - otherCost),
+    omittedOlderAttachments ? OLDER_ATTACHMENT_HISTORY_NOTE : undefined,
+  );
+  return retained;
+}
+
 const textOf = (m: UIMessage) =>
   m.parts.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim().slice(0, 1500);
 
@@ -381,7 +540,7 @@ async function generateTitle(
 ) {
   const user = messages.filter((m) => m.role === "user").map(textOf).join("\n");
   const result = streamText({
-    model: provider(DEFAULT_CHAT_MODEL),
+    model: asLanguageModel(provider(DEFAULT_CHAT_MODEL)),
     instructions:
       "Genera un título corto (3 a 6 palabras) en el idioma de la conversación que resuma el tema. Responde solo con el título, sin comillas ni punto final.",
     prompt: `Usuario: ${user}\n\nAsistente: ${textOf(reply)}`,

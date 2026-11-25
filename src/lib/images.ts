@@ -7,6 +7,7 @@ export const MAX_IMAGES = 4;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 /** Longest document text Capri reads per file; the rest is cut with a note. */
 export const MAX_DOCUMENT_CHARS = 60_000;
+export const DOCUMENT_ATTACHMENT_PREFIX = "Archivo adjunto: ";
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 export const TEXT_EXTENSIONS = [
@@ -40,8 +41,8 @@ export function attachmentKind(mediaType: string, filename?: string | null): Att
 export function documentText(filename: string, content: string): string {
   const cut = content.length > MAX_DOCUMENT_CHARS;
   const body = cut ? content.slice(0, MAX_DOCUMENT_CHARS) : content;
-  const note = cut ? `\n[El archivo es más largo; solo se incluyen los primeros ${MAX_DOCUMENT_CHARS} caracteres.]` : "";
-  return `Archivo adjunto: ${filename}\n<<<\n${body}\n>>>${note}`;
+  const note = cut ? `[El archivo es más largo; solo se incluyen los primeros ${MAX_DOCUMENT_CHARS} caracteres.]\n` : "";
+  return `${DOCUMENT_ATTACHMENT_PREFIX}${filename}\n${note}<<<\n${body}\n>>>`;
 }
 
 /** Storage path from a saved file part url, or null if it isn't one of ours. */

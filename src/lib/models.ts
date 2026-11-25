@@ -1,21 +1,26 @@
 /**
- * Chat models available in Capri, all on Groq's free plan (30 RPM / 1K RPD /
- * 8K TPM / 200K TPD each). Only these two are offered: the big one for hard
- * questions and the small one for everyday chats. Groq's free tier has no
- * other general chat model (Qwen 3.8 27B is preview-only, Safeguard is a
- * moderation model, and the Llama models left the free tier).
+ * Chat models available in Capri: two options run on Groq, and the custom
+ * Capri model runs on the configured OpenAI-compatible endpoint.
  */
-export type ChatModelId = "openai/gpt-oss-120b" | "openai/gpt-oss-20b";
+export const CUSTOM_CHAT_MODEL_ID = "custom";
+export const CUSTOM_CHAT_MODEL_NAME = "default";
+
+export type ChatModelId =
+  "openai/gpt-oss-120b" | "openai/gpt-oss-20b" | typeof CUSTOM_CHAT_MODEL_ID;
 
 export const CHAT_MODELS: Array<{ id: ChatModelId; label: string; hint: string }> = [
   { id: "openai/gpt-oss-120b", label: "Grande · 120B", hint: "Mejor calidad, para lo difícil" },
   { id: "openai/gpt-oss-20b", label: "Rápido · 20B", hint: "Más rápido, para lo cotidiano" },
+  { id: CUSTOM_CHAT_MODEL_ID, label: "Capri · Personalizado", hint: "Modelo afinado de Capri" },
 ];
 
 export const DEFAULT_CHAT_MODEL: ChatModelId = "openai/gpt-oss-120b";
 
 export function isChatModel(value: unknown): value is ChatModelId {
-  return typeof value === "string" && CHAT_MODELS.some((model) => model.id === value);
+  return (
+    value === CUSTOM_CHAT_MODEL_ID ||
+    (typeof value === "string" && CHAT_MODELS.some((model) => model.id === value))
+  );
 }
 
 /** Anything unrecognized (including a model from before the picker existed) falls back to the big model. */
