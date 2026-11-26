@@ -8,9 +8,9 @@ import {
 import { MAX_IMAGE_BYTES, MAX_IMAGES } from "@/lib/images";
 import { projectContextParts, resolveTrimmedAttachments } from "@/lib/chat.server";
 
-const filePart = (filename: string) => ({
+const filePart = (filename: string, mediaType = "text/plain") => ({
   type: "file" as const,
-  mediaType: "text/plain",
+  mediaType,
   filename,
   url: `capri-image://user/${filename}`,
 });
@@ -76,6 +76,23 @@ describe("límites server-side de adjuntos de chat", () => {
     });
     expect(download).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { kind: "PDF", filename: "oversized.pdf", mediaType: "application/pdf" },
+    { kind: "imagen", filename: "oversized.png", mediaType: "image/png" },
+  ])(
+    "rechaza un $kind entrante sobre 5 MiB con 413 antes de descargarlo",
+    async ({ filename, mediaType }) => {
+      const { supabase, download } = storageClient(MAX_IMAGE_BYTES + 1);
+      const message = userMessage([filePart(filename, mediaType)]);
+
+      await expect(resolveTrimmedAttachments(supabase, "user", [message])).rejects.toMatchObject({
+        status: 413,
+        message: "Cada archivo debe pesar 5 MB o menos.",
+      });
+      expect(download).not.toHaveBeenCalled();
+    },
+  );
 
   it("rechaza más archivos que el máximo antes de consultar Storage", async () => {
     const { supabase, list, download } = storageClient(MAX_IMAGE_BYTES);

@@ -305,7 +305,7 @@ describe("resolveTrimmedAttachments", () => {
     expect(resolved.map((message) => message.id)).toEqual(["current"]);
   });
 
-  it("poda un adjunto ASCII antiguo de 13 KB después de medir el texto decodificado", async () => {
+  it("poda un adjunto ASCII antiguo de 13 KB cuando su cota mínima ya no cabe", async () => {
     const asciiBytes = new TextEncoder().encode("a".repeat(13_000));
     const downloadPaths: string[] = [];
     const supabase = {
@@ -351,14 +351,19 @@ describe("resolveTrimmedAttachments", () => {
           },
         ],
       },
-      { id: "current", role: "user", parts: [{ type: "text", text: "texto actual" }] },
+      { id: "current", role: "user", parts: [{ type: "text", text: "x".repeat(9_000) }] },
     ];
 
     const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
 
-    expect(downloadPaths).toEqual(["user/old.txt"]);
+    expect(downloadPaths).toEqual([]);
     expect(resolved.map((message) => message.id)).toEqual(["current"]);
-    expect(resolved[0]?.parts).toContainEqual({ type: "text", text: "texto actual" });
+    const currentText = resolved[0]?.parts
+      .filter((part) => part.type === "text")
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("\n");
+    expect(currentText).toContain("x".repeat(20));
+    expect(currentText).toContain(OLDER_ATTACHMENT_HISTORY_NOTE.trim());
   });
 
   it("conserva CJK y poda ASCII de 13 KB del mismo tamaño en bytes cuando el antiguo ya no cabe", async () => {
@@ -585,6 +590,137 @@ describe("resolveTrimmedAttachments", () => {
     expect(downloadPaths).toEqual(["user/recent.txt"]);
     expect(resolved.map((message) => message.id)).toEqual(["current"]);
     expect(messageCost(resolved[0]!)).toBe(MAX_HISTORY_CHARS);
+  });
+
+  it("conserva el aviso de adjuntos omitidos al recortar también mensajes históricos sin adjuntos", async () => {
+    const listCalls: string[] = [];
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => {
+            listCalls.push(options?.search ?? "");
+            return {
+              data: [
+                {
+                  id: "object-id",
+                  name: "old.pdf",
+                  metadata: { size: MAX_IMAGE_BYTES + 1, contentEncoding: "identity" },
+                },
+              ],
+              error: null,
+            };
+          }),
+          download: vi.fn(async (path: string) => {
+            downloadPaths.push(path);
+            return { data: null, error: new Error("el PDF antiguo no debe descargarse") };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      { id: "older-text", role: "assistant", parts: [{ type: "text", text: "x".repeat(6_000) }] },
+      {
+        id: "oversized-pdf",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "old.pdf",
+            url: "capri-image://user/old.pdf",
+          },
+        ],
+      },
+      { id: "current", role: "user", parts: [{ type: "text", text: "c".repeat(7_000) }] },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+    const currentText = resolved[0]?.parts
+      .filter((part) => part.type === "text")
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("\n");
+
+    expect(listCalls).toEqual(["old.pdf"]);
+    expect(downloadPaths).toEqual([]);
+    expect(resolved.map((message) => message.id)).toEqual(["current"]);
+    expect(currentText).toContain(OLDER_ATTACHMENT_HISTORY_NOTE.trim());
+  });
+
+  it("conserva el texto de un mensaje mixto y recorta el adjunto con aviso dentro del presupuesto", async () => {
+    const asciiText = "a".repeat(13_002);
+    const ordinaryText = "historial que sí cabe".repeat(35);
+    const currentText = "c".repeat(5_000);
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => ({
+            data: [
+              {
+                id: "object-id",
+                name: options?.search ?? "large.txt",
+                metadata: {
+                  size: new TextEncoder().encode(asciiText).byteLength,
+                  contentEncoding: "identity",
+                },
+              },
+            ],
+            error: null,
+          })),
+          download: vi.fn((path: string) => {
+            downloadPaths.push(path);
+            return {
+              asStream: async () => ({ data: textStream(asciiText), error: null }),
+            };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "mixed",
+        role: "assistant",
+        parts: [
+          { type: "text", text: ordinaryText },
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "large.txt",
+            url: "capri-image://user/large.txt",
+          },
+        ],
+      },
+      { id: "current", role: "user", parts: [{ type: "text", text: currentText }] },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+    const mixedParts = resolved[0]?.parts.filter((part) => part.type === "text") ?? [];
+    const attachmentText = mixedParts.find(
+      (part) => part.type === "text" && part.text.startsWith("Archivo adjunto: large.txt"),
+    );
+    const finalCurrentText = resolved[1]?.parts.find((part) => part.type === "text");
+
+    expect(downloadPaths).toEqual(["user/large.txt"]);
+    expect(resolved.map((message) => message.id)).toEqual(["mixed", "current"]);
+    expect(mixedParts[0]).toEqual({ type: "text", text: ordinaryText });
+    expect(finalCurrentText).toEqual({ type: "text", text: currentText });
+    expect(attachmentText?.type === "text" ? attachmentText.text : "").toContain(
+      asciiText.slice(0, 100),
+    );
+    expect(attachmentText?.type === "text" ? attachmentText.text : "").not.toContain(asciiText);
+    expect(
+      mixedParts.some(
+        (part) =>
+          part.type === "text" &&
+          part.text.includes(
+            "Uno o más adjuntos se recortaron u omitieron por el límite del historial.",
+          ),
+      ),
+    ).toBe(true);
+    expect(messageCost(resolved[0]!) + messageCost(resolved[1]!)).toBeLessThanOrEqual(
+      MAX_HISTORY_CHARS,
+    );
   });
 
   it("reserva el aviso completo antes de conservar historial casi lleno y no descarga el adjunto omitido", async () => {

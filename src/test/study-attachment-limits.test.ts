@@ -39,9 +39,11 @@ function fakeSupabase(
   options: {
     files?: typeof projectFiles;
     makeStream?: () => ReadableStream<Uint8Array>;
+    missingMetadata?: boolean;
   } = {},
 ) {
   const files = options.files ?? projectFiles;
+  const insert = vi.fn();
   const from = vi.fn((table: string) => {
     const builder: Record<string, ReturnType<typeof vi.fn>> = {};
     builder["select"] = vi.fn(() => builder);
@@ -54,6 +56,10 @@ function fakeSupabase(
       data: table === "project_files" ? files : [],
       error: null,
     }));
+    builder["insert"] = vi.fn((...args: unknown[]) => {
+      insert(...args);
+      return builder;
+    });
     return builder;
   });
   const list = vi.fn(async (_folder: string, listOptions?: { search?: string }) => ({
@@ -61,9 +67,9 @@ function fakeSupabase(
       {
         id: "object-id",
         name: listOptions?.search ?? "file.txt",
-        metadata: {
-          size: listOptions?.search === "oversized.txt" ? MAX_IMAGE_BYTES + 1 : 100,
-        },
+        metadata: options.missingMetadata
+          ? null
+          : { size: listOptions?.search === "oversized.txt" ? MAX_IMAGE_BYTES + 1 : 100 },
       },
     ],
     error: null,
@@ -78,7 +84,7 @@ function fakeSupabase(
     from,
     storage: { from: () => ({ list, download }) },
   } as unknown as UserClient;
-  return { supabase, list, download };
+  return { supabase, list, download, insert };
 }
 
 describe("límites de adjuntos en /api/study", () => {
@@ -99,6 +105,29 @@ describe("límites de adjuntos en /api/study", () => {
     expect(await response.json()).toEqual({ error: "Cada archivo debe pesar 5 MB o menos." });
     expect(list).toHaveBeenCalledTimes(2);
     expect(download).not.toHaveBeenCalled();
+  });
+
+  it("falla cerrado si falta el tamaño del archivo y no descarga ni guarda el cuestionario", async () => {
+    const { supabase, list, download, insert } = fakeSupabase({
+      files: [projectFiles[0]!],
+      missingMetadata: true,
+    });
+    authenticateMock.mockResolvedValue({ supabase, userId: "user-1" });
+    const request = new Request("http://localhost/api/study", {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "project-1" }),
+    });
+
+    const response = await handleStudyGenerate(request);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "No se pudo verificar el tamaño de un archivo adjunto.",
+    });
+    expect(list).toHaveBeenCalledOnce();
+    expect(download).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("rechaza y cancela un stream que supera 5 MiB aunque la metadata sea pequeña", async () => {

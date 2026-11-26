@@ -659,7 +659,7 @@ export async function resolveTrimmedAttachments(
     minimumCostsByIndex.set(i, minimumPartCosts);
     const fileCount = message.parts.filter((part) => part.type === "file").length;
     if (i < messages.length - 1 && fileCount > MAX_IMAGES) {
-      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      omittedOlderAttachments ||= messages.slice(0, i + 1).some(hasAttachment);
       break;
     }
     // Unknown text metadata contributes no pruning estimate; it remains a candidate
@@ -667,7 +667,7 @@ export async function resolveTrimmedAttachments(
     const minimumCost = minimumPartCosts.reduce((sum, cost) => sum + cost, 0);
     minimumCostByIndex.set(i, minimumCost);
     if (i < messages.length - 1 && total + minimumCost > MAX_HISTORY_CHARS) {
-      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      omittedOlderAttachments ||= messages.slice(0, i + 1).some(hasAttachment);
       break;
     }
     candidates.push({ message, index: i });
@@ -682,7 +682,7 @@ export async function resolveTrimmedAttachments(
   total = 0;
   for (const { message, index: i } of candidates) {
     if (i < messages.length - 1 && total + (minimumCostByIndex.get(i) ?? 0) > MAX_HISTORY_CHARS) {
-      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      omittedOlderAttachments ||= messages.slice(0, i + 1).some(hasAttachment);
       break;
     }
     const minimumPartCosts = minimumCostsByIndex.get(i) ?? [];
@@ -710,11 +710,19 @@ export async function resolveTrimmedAttachments(
     const cost = messageCost(resolved!);
     if (i === messages.length - 1 && cost > MAX_HISTORY_CHARS) {
       retained.unshift(resolved!);
-      omittedOlderAttachments = messages.slice(0, i).some(hasAttachment);
+      omittedOlderAttachments ||= messages.slice(0, i).some(hasAttachment);
       break;
     }
     if (i < messages.length - 1 && total + cost > MAX_HISTORY_CHARS) {
-      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      omittedOlderAttachments ||= messages.slice(0, i + 1).some(hasAttachment);
+      const olderAttachmentNoticeCost = omittedOlderAttachments
+        ? OLDER_ATTACHMENT_HISTORY_NOTE.length
+        : 0;
+      const shortened = trimMessageToBudget(
+        resolved!,
+        Math.max(0, MAX_HISTORY_CHARS - total - olderAttachmentNoticeCost),
+      );
+      if (messageCost(shortened) > 0) retained.unshift(shortened);
       break;
     }
 
