@@ -14,15 +14,17 @@ import { MAX_CHAT_REQUEST_BYTES, parseChatRequest } from "./chat-request";
 import {
   ChatAttachmentLimitError,
   type ChatAttachmentMetadataCache,
+  downloadChatAttachmentBytes,
   readChatAttachmentMetadata,
   validateChatAttachment,
   validateChatMessageAttachments,
 } from "./chat-attachment-limits.server";
 import { parseCustomChatModelConfig } from "./chat-model-config";
 import {
-  IMAGE_BUCKET,
   IMAGE_SCHEME,
   MAX_DOCUMENT_CHARS,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES,
   attachmentKind,
   documentText,
   imagePath,
@@ -153,8 +155,59 @@ export async function handleChat(request: Request) {
     chatModel = asLanguageModel(provider(chatModelId));
   }
 
-  const last = messages[messages.length - 1]!;
   const preflightMetadataCache: ChatAttachmentMetadataCache = new Map();
+
+  // Trim first so attachments in discarded messages are never downloaded.
+  let modelMessages: UIMessage[];
+  try {
+    modelMessages = await resolveTrimmedAttachments(
+      supabase,
+      userId,
+      messages,
+      preflightMetadataCache,
+      request.signal,
+    );
+  } catch (e) {
+    console.error("resolve attachments", e);
+    const error = e instanceof Error ? e : new Error("No se pudo leer un archivo adjunto.");
+    const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
+    return json(status, error.message || "No se pudo leer un archivo adjunto.");
+  }
+
+  // Project files ride along as a leading message (never saved): the model sees
+  // them on every turn of a thread that belongs to a project.
+  let contextMessages: UIMessage[] = modelMessages;
+  if (project) {
+    let projectParts: Awaited<ReturnType<typeof projectContextParts>>;
+    try {
+      projectParts = await projectContextParts(supabase, userId, projectFileRows, request.signal);
+    } catch (e) {
+      console.error("project context files", e);
+      const error = e instanceof Error ? e : new Error("No se pudo leer un archivo del proyecto.");
+      const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
+      return json(status, error.message || "No se pudo leer un archivo del proyecto.");
+    }
+    const { parts, omitted, cut } = projectParts;
+    if (parts.length > 0) {
+      const note = [
+        `Archivos del proyecto «${project.name}». Úsalos como contexto para responder.`,
+        omitted > 0
+          ? `Se incluyen los ${parts.length} más recientes; el proyecto tiene ${omitted} más.`
+          : "",
+        cut ? "Algunos archivos se recortaron por longitud." : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      contextMessages = [
+        { id: "project-files", role: "user", parts: [{ type: "text", text: note }, ...parts] },
+        ...modelMessages,
+      ];
+    }
+  }
+
+  // Persist only after every retained chat and project-file stream has passed
+  // its real byte limit; metadata alone cannot rule out an oversized object.
+  const last = messages[messages.length - 1]!;
   if (last.role === "user") {
     try {
       await validateChatMessageAttachments(supabase, userId, last, preflightMetadataCache);
@@ -178,48 +231,6 @@ export async function handleChat(request: Request) {
           .from("threads")
           .update({ title: text.slice(0, 60) })
           .eq("id", threadId);
-    }
-  }
-
-  // Trim first so attachments in discarded messages are never downloaded.
-  let modelMessages: UIMessage[];
-  try {
-    modelMessages = await resolveTrimmedAttachments(supabase, userId, messages);
-  } catch (e) {
-    console.error("resolve attachments", e);
-    const error = e instanceof Error ? e : new Error("No se pudo leer un archivo adjunto.");
-    const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
-    return json(status, error.message || "No se pudo leer un archivo adjunto.");
-  }
-
-  // Project files ride along as a leading message (never saved): the model sees
-  // them on every turn of a thread that belongs to a project.
-  let contextMessages: UIMessage[] = modelMessages;
-  if (project) {
-    let projectParts: Awaited<ReturnType<typeof projectContextParts>>;
-    try {
-      projectParts = await projectContextParts(supabase, userId, projectFileRows);
-    } catch (e) {
-      console.error("project context files", e);
-      const error = e instanceof Error ? e : new Error("No se pudo leer un archivo del proyecto.");
-      const status = e instanceof ChatAttachmentLimitError ? e.status : 400;
-      return json(status, error.message || "No se pudo leer un archivo del proyecto.");
-    }
-    const { parts, omitted, cut } = projectParts;
-    if (parts.length > 0) {
-      const note = [
-        `Archivos del proyecto «${project.name}». Úsalos como contexto para responder.`,
-        omitted > 0
-          ? `Se incluyen los ${parts.length} más recientes; el proyecto tiene ${omitted} más.`
-          : "",
-        cut ? "Algunos archivos se recortaron por longitud." : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      contextMessages = [
-        { id: "project-files", role: "user", parts: [{ type: "text", text: note }, ...parts] },
-        ...modelMessages,
-      ];
     }
   }
 
@@ -440,6 +451,7 @@ export async function projectContextParts(
   supabase: UserClient,
   userId: string,
   files: { name: string; storage_path: string; media_type: string; created_at: string }[],
+  abortSignal?: AbortSignal,
 ): Promise<{ parts: UIMessage["parts"]; omitted: number; cut: boolean }> {
   const selected = selectProjectFiles(files);
   const texts: { name: string; text: string }[] = [];
@@ -467,12 +479,16 @@ export async function projectContextParts(
       }),
   );
   for (const { file, kind, path } of validated) {
-    const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
-    if (error || !data) continue;
+    let bytes: Uint8Array;
+    try {
+      bytes = await downloadChatAttachmentBytes(supabase, path, abortSignal);
+    } catch (error) {
+      if (abortSignal?.aborted || error instanceof ChatAttachmentLimitError) throw error;
+      continue;
+    }
     if (kind === "text") {
-      texts.push({ name: file.name, text: await data.text() });
+      texts.push({ name: file.name, text: new TextDecoder().decode(bytes) });
     } else {
-      const bytes = new Uint8Array(await data.arrayBuffer());
       let bin = "";
       for (let i = 0; i < bytes.length; i += 0x8000) {
         bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -506,88 +522,84 @@ async function resolveAttachments(
   messages: UIMessage[],
   cache: Map<string, UIMessage["parts"][number]> = new Map(),
   metadataCache: ChatAttachmentMetadataCache = new Map(),
+  abortSignal?: AbortSignal,
+  shouldResolveAttachment?: (partIndex: number, resolvedParts: UIMessage["parts"]) => boolean,
 ): Promise<UIMessage[]> {
   return Promise.all(
     messages.map(async (m) => {
-      // Check every retained file's metadata before starting any body downloads for this message.
-      await validateChatMessageAttachments(supabase, userId, m, metadataCache);
-
+      const parts: UIMessage["parts"] = [];
+      for (let partIndex = 0; partIndex < m.parts.length; partIndex++) {
+        const p = m.parts[partIndex]!;
+        if (p.type !== "file") {
+          parts.push(p);
+          continue;
+        }
+        if (shouldResolveAttachment && !shouldResolveAttachment(partIndex, parts)) continue;
+        const path = await validateChatAttachment(supabase, userId, p, metadataCache);
+        const kind = attachmentKind(p.mediaType, p.filename)!;
+        const cached = cache.get(path);
+        if (cached) {
+          parts.push(cached);
+          continue;
+        }
+        const bytes = await downloadChatAttachmentBytes(supabase, path, abortSignal);
+        let resolved: UIMessage["parts"][number];
+        if (kind === "text") {
+          resolved = {
+            type: "text",
+            text: documentText(p.filename ?? "archivo.txt", new TextDecoder().decode(bytes)),
+          };
+        } else {
+          let bin = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          }
+          const mediaType = kind === "pdf" ? "application/pdf" : p.mediaType;
+          resolved = { ...p, mediaType, url: `data:${mediaType};base64,${btoa(bin)}` };
+        }
+        cache.set(path, resolved);
+        parts.push(resolved);
+      }
       return {
         ...m,
-        parts: await Promise.all(
-          m.parts.map(async (p) => {
-            if (p.type !== "file") return p;
-            const path = await validateChatAttachment(supabase, userId, p, metadataCache);
-            const kind = attachmentKind(p.mediaType, p.filename)!;
-            const cached = cache.get(path);
-            if (cached) return cached;
-            const { data, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
-            if (error || !data) throw new Error("No se pudo leer un archivo adjunto.");
-            let resolved: UIMessage["parts"][number];
-            if (kind === "text") {
-              resolved = {
-                type: "text",
-                text: documentText(p.filename ?? "archivo.txt", await data.text()),
-              };
-            } else {
-              const bytes = new Uint8Array(await data.arrayBuffer());
-              let bin = "";
-              for (let i = 0; i < bytes.length; i += 0x8000) {
-                bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-              }
-              const mediaType = kind === "pdf" ? "application/pdf" : p.mediaType;
-              resolved = { ...p, mediaType, url: `data:${mediaType};base64,${btoa(bin)}` };
-            }
-            cache.set(path, resolved);
-            return resolved;
-          }),
-        ),
+        parts,
       };
     }),
   );
 }
 
-/** Uses object metadata only when it can prove a text attachment cannot fit. */
-async function textAttachmentsCannotFit(
+/**
+ * Estimates safe minimum costs from metadata. For text, a UTF-8 byte size proves
+ * that an older attachment cannot fit only when even its minimum decoded length is too large.
+ */
+async function minimumAttachmentPartCosts(
   supabase: UserClient,
   userId: string,
   message: UIMessage,
-  availableChars: number,
-  cache: Map<string, UIMessage["parts"][number]>,
   metadataCache: ChatAttachmentMetadataCache,
-): Promise<boolean> {
-  let minimumCost = 0;
+): Promise<number[] | null> {
+  const minimumCosts: number[] = [];
   for (const part of message.parts) {
-    if (part.type !== "file" || attachmentKind(part.mediaType, part.filename) !== "text") continue;
-    const path = imagePath(part.url);
-    if (!path || !ownsImagePath(path, userId)) return false;
-
-    const cached = cache.get(path);
-    if (cached) {
-      minimumCost += partCost(cached);
-    } else {
-      const metadata = await readChatAttachmentMetadata(supabase, path, metadataCache);
-      if (!metadata) return false;
-      const { size, contentEncoding } = metadata;
-      if (
-        typeof contentEncoding === "string" &&
-        contentEncoding &&
-        contentEncoding.toLowerCase() !== "identity"
-      ) {
-        return false;
-      }
-
-      // Chat uploads use UTF-8 without content encoding. At most four bytes
-      // encode one Unicode scalar (with up to three bytes for a stripped BOM),
-      // giving a safe lower bound when contentEncoding is absent or identity.
-      const minimumBodyChars = Math.ceil(Math.max(0, size - 3) / 4);
-      const wrapperChars = documentText(part.filename ?? "archivo.txt", "").length;
-      minimumCost += wrapperChars + Math.min(minimumBodyChars, MAX_DOCUMENT_CHARS);
+    if (part.type !== "file" || attachmentKind(part.mediaType, part.filename) !== "text") {
+      minimumCosts.push(partCost(part));
+      continue;
     }
+    const filename = part.filename ?? "archivo.txt";
+    const path = imagePath(part.url);
+    if (!path || !ownsImagePath(path, userId)) return null;
+    const metadata = await readChatAttachmentMetadata(supabase, path, metadataCache);
+    const encoding = metadata?.contentEncoding?.trim().toLowerCase();
+    if (!metadata || (encoding && encoding !== "identity")) return null;
 
-    if (minimumCost > availableChars) return true;
+    // At least one decoded UTF-16 code unit per four UTF-8 bytes is a safe lower
+    // bound (subtract a possible stripped BOM). Cap before repeat() for huge files.
+    const minimumBodyChars = Math.min(
+      MAX_DOCUMENT_CHARS + 1,
+      Math.ceil(Math.max(0, metadata.size - 3) / 4),
+    );
+    minimumCosts.push(documentText(filename, "x".repeat(minimumBodyChars)).length);
   }
-  return false;
+  return minimumCosts;
 }
 
 export async function resolveTrimmedAttachments(
@@ -595,50 +607,106 @@ export async function resolveTrimmedAttachments(
   userId: string,
   messages: UIMessage[],
   metadataCache: ChatAttachmentMetadataCache = new Map(),
+  abortSignal?: AbortSignal,
 ): Promise<UIMessage[]> {
   const retained: UIMessage[] = [];
   const cache = new Map<string, UIMessage["parts"][number]>();
+  const minimumCostsByIndex = new Map<number, number[]>();
   let total = 0;
   let omittedOlderAttachments = false;
+  const minimumCostByIndex = new Map<number, number>();
   const hasAttachment = (candidate: UIMessage) =>
     candidate.parts.some((part) => part.type === "file");
+  const candidates: { message: UIMessage; index: number }[] = [];
 
-  // Work backwards so a large recent text attachment can stop history loading
-  // before attachments in older messages are downloaded.
+  // Plan the retained suffix with safe lower-bound text costs before metadata validation
+  // or body downloads, so an old attachment that cannot fit cannot reject this turn.
   for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]!;
-    const knownCost = message.parts.reduce((sum, part) => {
-      if (part.type !== "file") return sum + partCost(part);
-      return sum + (attachmentKind(part.mediaType, part.filename) === "text" ? 0 : partCost(part));
-    }, 0);
-    const hasTextAttachment = message.parts.some(
-      (part) => part.type === "file" && attachmentKind(part.mediaType, part.filename) === "text",
+    const originalMessage = messages[i]!;
+    let message = originalMessage;
+    if (i < messages.length - 1) {
+      const parts: UIMessage["parts"] = [];
+      for (const part of originalMessage.parts) {
+        if (part.type === "file") {
+          const path = imagePath(part.url);
+          const kind = attachmentKind(part.mediaType, part.filename);
+          if (path && kind && ownsImagePath(path, userId)) {
+            const metadata = await readChatAttachmentMetadata(supabase, path, metadataCache);
+            if (metadata && metadata.size > MAX_IMAGE_BYTES) {
+              omittedOlderAttachments = true;
+              continue;
+            }
+          }
+        }
+        parts.push(part);
+      }
+      message = { ...originalMessage, parts };
+      if (message.parts.length === 0) continue;
+    }
+    const estimatedPartCosts = await minimumAttachmentPartCosts(
+      supabase,
+      userId,
+      message,
+      metadataCache,
     );
-    const cannotFit =
-      total + knownCost > MAX_HISTORY_CHARS ||
-      (total + knownCost === MAX_HISTORY_CHARS && hasTextAttachment);
-    if (i < messages.length - 1 && cannotFit) {
+    const minimumPartCosts =
+      estimatedPartCosts ??
+      message.parts.map((part) =>
+        part.type === "file" && attachmentKind(part.mediaType, part.filename) === "text"
+          ? 0
+          : partCost(part),
+      );
+    minimumCostsByIndex.set(i, minimumPartCosts);
+    const fileCount = message.parts.filter((part) => part.type === "file").length;
+    if (i < messages.length - 1 && fileCount > MAX_IMAGES) {
       omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
       break;
     }
-    const availableChars = MAX_HISTORY_CHARS - total - knownCost;
-    if (
-      i < messages.length - 1 &&
-      hasTextAttachment &&
-      (await textAttachmentsCannotFit(
-        supabase,
-        userId,
-        message,
-        availableChars,
-        cache,
-        metadataCache,
-      ))
-    ) {
+    // Unknown text metadata contributes no pruning estimate; it remains a candidate
+    // and fail-closed preflight below rejects it before any body download.
+    const minimumCost = minimumPartCosts.reduce((sum, cost) => sum + cost, 0);
+    minimumCostByIndex.set(i, minimumCost);
+    if (i < messages.length - 1 && total + minimumCost > MAX_HISTORY_CHARS) {
       omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
       break;
     }
+    candidates.push({ message, index: i });
+    total += minimumCost;
+  }
 
-    const [resolved] = await resolveAttachments(supabase, userId, [message], cache, metadataCache);
+  // Validate every attachment in the planned retained suffix before any body download.
+  for (const { message } of candidates) {
+    await validateChatMessageAttachments(supabase, userId, message, metadataCache);
+  }
+
+  total = 0;
+  for (const { message, index: i } of candidates) {
+    if (i < messages.length - 1 && total + (minimumCostByIndex.get(i) ?? 0) > MAX_HISTORY_CHARS) {
+      omittedOlderAttachments = messages.slice(0, i + 1).some(hasAttachment);
+      break;
+    }
+    const minimumPartCosts = minimumCostsByIndex.get(i) ?? [];
+    const shouldResolveAttachment =
+      i < messages.length - 1
+        ? (partIndex: number, resolvedParts: UIMessage["parts"]) => {
+            const resolvedCost = resolvedParts.reduce((sum, part) => sum + partCost(part), 0);
+            const minimumPartCost = minimumPartCosts[partIndex] ?? 0;
+            if (total + resolvedCost + minimumPartCost > MAX_HISTORY_CHARS) {
+              omittedOlderAttachments = true;
+              return false;
+            }
+            return true;
+          }
+        : undefined;
+    const [resolved] = await resolveAttachments(
+      supabase,
+      userId,
+      [message],
+      cache,
+      metadataCache,
+      abortSignal,
+      shouldResolveAttachment,
+    );
     const cost = messageCost(resolved!);
     if (i === messages.length - 1 && cost > MAX_HISTORY_CHARS) {
       retained.unshift(resolved!);

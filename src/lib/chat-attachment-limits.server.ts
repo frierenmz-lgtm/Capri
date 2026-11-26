@@ -80,6 +80,69 @@ export async function validateChatAttachment(
   return path;
 }
 
+/**
+ * Reads the actual Storage response with a strict byte cap. The bucket policy remains
+ * responsible for preventing oversized objects from being stored in the first place.
+ */
+export async function downloadChatAttachmentBytes(
+  supabase: UserClient,
+  path: string,
+  abortSignal?: AbortSignal,
+): Promise<Uint8Array> {
+  const { data, error } = await supabase.storage
+    .from(IMAGE_BUCKET)
+    .download(path, undefined, abortSignal ? { signal: abortSignal } : {})
+    .asStream();
+  if (error || !data) throw new Error("No se pudo leer un archivo adjunto.");
+
+  const reader = data.getReader();
+  let bytes = new Uint8Array(0);
+  let total = 0;
+  const cancelOnAbort = () => {
+    void reader.cancel(abortSignal?.reason).catch(() => undefined);
+  };
+  abortSignal?.addEventListener("abort", cancelOnAbort, { once: true });
+  try {
+    if (abortSignal?.aborted) throw abortSignal.reason ?? new Error("La descarga fue cancelada.");
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (abortSignal?.aborted) throw abortSignal.reason ?? new Error("La descarga fue cancelada.");
+      if (done) break;
+      if (!value) continue;
+      const nextTotal = total + value.byteLength;
+      if (nextTotal > MAX_IMAGE_BYTES) {
+        throw new ChatAttachmentLimitError("Cada archivo debe pesar 5 MB o menos.", 413);
+      }
+      if (nextTotal > bytes.length) {
+        const capacity = Math.min(
+          MAX_IMAGE_BYTES,
+          Math.max(nextTotal, bytes.length === 0 ? 1024 : bytes.length * 2),
+        );
+        const grown = new Uint8Array(capacity);
+        grown.set(bytes.subarray(0, total));
+        bytes = grown;
+      }
+      bytes.set(value, total);
+      total = nextTotal;
+    }
+  } catch (error) {
+    try {
+      await reader.cancel(abortSignal?.aborted ? abortSignal.reason : undefined);
+    } catch {
+      // The original read/limit error is more useful than a cancellation error.
+    }
+    if (abortSignal?.aborted) throw abortSignal.reason ?? new Error("La descarga fue cancelada.");
+    if (error instanceof ChatAttachmentLimitError) throw error;
+    throw new Error("No se pudo leer un archivo adjunto.");
+  } finally {
+    abortSignal?.removeEventListener("abort", cancelOnAbort);
+    reader.releaseLock();
+  }
+
+  // Expose the buffered body only after the complete stream has passed the byte limit.
+  return bytes.subarray(0, total);
+}
+
 /** Enforces the existing per-message count and per-file byte limits for a new chat message. */
 export async function validateChatMessageAttachments(
   supabase: UserClient,

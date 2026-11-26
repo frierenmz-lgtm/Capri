@@ -4,9 +4,10 @@ import { authenticate, json } from "./auth-request.server";
 import {
   ChatAttachmentLimitError,
   type ChatAttachmentMetadataCache,
+  downloadChatAttachmentBytes,
   validateChatAttachment,
 } from "./chat-attachment-limits.server";
-import { IMAGE_BUCKET, IMAGE_SCHEME, attachmentKind, ownsImagePath } from "./images";
+import { IMAGE_SCHEME, attachmentKind, ownsImagePath } from "./images";
 import { DEFAULT_CHAT_MODEL } from "./models";
 import { budgetProjectTexts, projectFileText, selectProjectFiles } from "./project-context";
 import { MAX_QUIZ_QUESTIONS, MIN_QUIZ_QUESTIONS, parseQuizJson } from "./study-quiz";
@@ -84,9 +85,14 @@ export async function handleStudyGenerate(request: Request) {
     }
     const texts: { name: string; text: string }[] = [];
     for (const { file, path } of validatedTexts) {
-      const { data: blob, error } = await supabase.storage.from(IMAGE_BUCKET).download(path);
-      if (error || !blob) continue;
-      texts.push({ name: file.name, text: await blob.text() });
+      try {
+        const bytes = await downloadChatAttachmentBytes(supabase, path, request.signal);
+        texts.push({ name: file.name, text: new TextDecoder().decode(bytes) });
+      } catch (error) {
+        if (error instanceof ChatAttachmentLimitError) return json(error.status, error.message);
+        if (request.signal.aborted) throw error;
+        continue;
+      }
     }
     const budgeted = budgetProjectTexts(texts);
     sourceText = budgeted

@@ -1,13 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
 import type { UserClient } from "@/lib/auth-request.server";
-import { MAX_DOCUMENT_CHARS } from "@/lib/images";
+import { MAX_DOCUMENT_CHARS, MAX_IMAGE_BYTES } from "@/lib/images";
 import {
   MAX_HISTORY_CHARS,
   messageCost,
   OLDER_ATTACHMENT_HISTORY_NOTE,
 } from "@/lib/history-budget";
 import { resolveTrimmedAttachments } from "@/lib/chat.server";
+
+const textStream = (text: string) =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
 
 describe("resolveTrimmedAttachments", () => {
   it("no descarga adjuntos de mensajes recortados y conserva los de los mensajes retenidos", async () => {
@@ -25,11 +33,14 @@ describe("resolveTrimmedAttachments", () => {
             ],
             error: null,
           })),
-          download: vi.fn(async (path: string) => {
+          download: vi.fn((path: string) => {
             downloaded.push(path);
-            return path === "user/retained.txt"
-              ? { data: { text: async () => "contenido vigente" }, error: null }
-              : { data: null, error: new Error("adjunto antiguo no disponible") };
+            return {
+              asStream: async () =>
+                path === "user/retained.txt"
+                  ? { data: textStream("contenido vigente"), error: null }
+                  : { data: null, error: new Error("adjunto antiguo no disponible") },
+            };
           }),
         }),
       },
@@ -78,6 +89,58 @@ describe("resolveTrimmedAttachments", () => {
     expect(messageCost(resolved[0]!)).toBeLessThanOrEqual(MAX_HISTORY_CHARS);
   });
 
+  it("prevalida todos los adjuntos del mensaje retenido y no descarga ninguno si uno es inválido", async () => {
+    const downloaded: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => ({
+            data: [
+              {
+                id: "object-id",
+                name: options?.search ?? "current.txt",
+                metadata: options?.search === "invalid.txt" ? null : { size: 20 },
+              },
+            ],
+            error: null,
+          })),
+          download: vi.fn((path: string) => {
+            downloaded.push(path);
+            return {
+              asStream: async () => ({ data: textStream("contenido"), error: null }),
+            };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "current",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "current.txt",
+            url: "capri-image://user/current.txt",
+          },
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "invalid.txt",
+            url: "capri-image://user/invalid.txt",
+          },
+        ],
+      },
+    ];
+
+    await expect(resolveTrimmedAttachments(supabase, "user", messages)).rejects.toThrow(
+      "No se pudo verificar el tamaño de un archivo adjunto.",
+    );
+
+    expect(downloaded).toEqual([]);
+  });
+
   it("cuenta el adjunto de texto grande, respeta el límite estricto y omite adjuntos antiguos", async () => {
     const downloaded: string[] = [];
     const longAttachmentText = "y".repeat(MAX_DOCUMENT_CHARS + 100);
@@ -94,11 +157,14 @@ describe("resolveTrimmedAttachments", () => {
             ],
             error: null,
           })),
-          download: vi.fn(async (path: string) => {
+          download: vi.fn((path: string) => {
             downloaded.push(path);
-            return path === "user/retained.txt"
-              ? { data: { text: async () => longAttachmentText }, error: null }
-              : { data: null, error: new Error("adjunto antiguo no disponible") };
+            return {
+              asStream: async () =>
+                path === "user/retained.txt"
+                  ? { data: textStream(longAttachmentText), error: null }
+                  : { data: null, error: new Error("adjunto antiguo no disponible") },
+            };
           }),
         }),
       },
@@ -190,6 +256,337 @@ describe("resolveTrimmedAttachments", () => {
     expect(resolved.map((message) => message.id)).toEqual(["current"]);
   });
 
+  it("poda un adjunto histórico mayor a 5 MiB con encoding admitida sin validarlo ni descargarlo", async () => {
+    const listCalls: string[] = [];
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (folder: string, options?: { search?: string; limit?: number }) => {
+            listCalls.push(`${folder}/${options?.search}/${options?.limit}`);
+            return {
+              data: [
+                {
+                  id: "object-id",
+                  name: "old-large.txt",
+                  metadata: { size: 5 * 1024 * 1024 + 1, contentEncoding: "identity" },
+                },
+              ],
+              error: null,
+            };
+          }),
+          download: vi.fn(async (path: string) => {
+            downloadPaths.push(path);
+            return { data: null, error: new Error("no debe descargarse") };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "old-large",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "old-large.txt",
+            url: "capri-image://user/old-large.txt",
+          },
+        ],
+      },
+      { id: "current", role: "user", parts: [{ type: "text", text: "mensaje actual" }] },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+
+    expect(listCalls).toEqual(["user/old-large.txt/100"]);
+    expect(downloadPaths).toEqual([]);
+    expect(resolved.map((message) => message.id)).toEqual(["current"]);
+  });
+
+  it("poda un adjunto ASCII antiguo de 13 KB después de medir el texto decodificado", async () => {
+    const asciiBytes = new TextEncoder().encode("a".repeat(13_000));
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => ({
+            data: [
+              {
+                id: "object-id",
+                name: options?.search ?? "old.txt",
+                metadata: { size: asciiBytes.byteLength },
+              },
+            ],
+            error: null,
+          })),
+          download: vi.fn((path: string) => {
+            downloadPaths.push(path);
+            return {
+              asStream: async () => ({
+                data: new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.enqueue(asciiBytes);
+                    controller.close();
+                  },
+                }),
+                error: null,
+              }),
+            };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "old",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "antiguo.txt",
+            url: "capri-image://user/old.txt",
+          },
+        ],
+      },
+      { id: "current", role: "user", parts: [{ type: "text", text: "texto actual" }] },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+
+    expect(downloadPaths).toEqual(["user/old.txt"]);
+    expect(resolved.map((message) => message.id)).toEqual(["current"]);
+    expect(resolved[0]?.parts).toContainEqual({ type: "text", text: "texto actual" });
+  });
+
+  it("conserva CJK y poda ASCII de 13 KB del mismo tamaño en bytes cuando el antiguo ya no cabe", async () => {
+    const asciiText = "a".repeat(13_002);
+    const cjkText = "界".repeat(4_334);
+    const asciiBytes = new TextEncoder().encode(asciiText);
+    const cjkBytes = new TextEncoder().encode(cjkText);
+    expect(cjkBytes.byteLength).toBe(asciiBytes.byteLength);
+
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => ({
+            data: [
+              {
+                id: "object-id",
+                name: options?.search ?? "file.txt",
+                metadata: { size: asciiBytes.byteLength },
+              },
+            ],
+            error: null,
+          })),
+          download: vi.fn((path: string) => {
+            downloadPaths.push(path);
+            return {
+              asStream: async () => ({
+                data: textStream(path === "user/cjk.txt" ? cjkText : asciiText),
+                error: null,
+              }),
+            };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "ascii-old",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "ascii.txt",
+            url: "capri-image://user/ascii.txt",
+          },
+        ],
+      },
+      {
+        id: "cjk",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "cjk.txt",
+            url: "capri-image://user/cjk.txt",
+          },
+        ],
+      },
+      { id: "current", role: "user", parts: [{ type: "text", text: "x".repeat(5_000) }] },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+
+    expect(downloadPaths).toEqual(["user/cjk.txt"]);
+    expect(resolved.map((message) => message.id)).toEqual(["cjk", "current"]);
+    const cjkAttachment = resolved[0]?.parts.find((part) => part.type === "text");
+    expect(cjkAttachment?.type === "text" ? cjkAttachment.text : "").toContain(cjkText);
+    expect(messageCost(resolved[0]!) + messageCost(resolved[1]!)).toBeLessThanOrEqual(
+      MAX_HISTORY_CHARS,
+    );
+  });
+
+  it("poda el segundo adjunto de un mismo mensaje antes de descargarlo cuando el CJK consume el presupuesto", async () => {
+    const cjkText = "界".repeat(4_334);
+    const asciiText = "a".repeat(13_002);
+    const sharedByteSize = new TextEncoder().encode(asciiText).byteLength;
+    expect(new TextEncoder().encode(cjkText).byteLength).toBe(sharedByteSize);
+
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => {
+            const filename = options?.search ?? "";
+            return {
+              data: [
+                {
+                  id: "object-id",
+                  name: filename,
+                  metadata: { size: sharedByteSize, contentEncoding: "identity" },
+                },
+              ],
+              error: null,
+            };
+          }),
+          download: vi.fn((path: string) => {
+            downloadPaths.push(path);
+            return {
+              asStream: async () => ({
+                data: textStream(path === "user/cjk.txt" ? cjkText : asciiText),
+                error: null,
+              }),
+            };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "paired",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "cjk.txt",
+            url: "capri-image://user/cjk.txt",
+          },
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "ascii.txt",
+            url: "capri-image://user/ascii.txt",
+          },
+        ],
+      },
+      { id: "current", role: "user", parts: [{ type: "text", text: "x".repeat(5_000) }] },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+
+    expect(downloadPaths).toEqual(["user/cjk.txt"]);
+    expect(resolved.map((message) => message.id)).toEqual(["paired", "current"]);
+    const olderText = resolved[0]?.parts
+      .filter((part) => part.type === "text")
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("\n");
+    expect(olderText).toContain(cjkText);
+    expect(olderText).not.toContain("Archivo adjunto: ascii.txt");
+  });
+
+  it("poda PDF histórico mayor a 5 MiB si el texto CJK más reciente ocupa el presupuesto", async () => {
+    const cjkText = "界".repeat(13_000);
+    const cjkBytes = new TextEncoder().encode(cjkText);
+    const listCalls: string[] = [];
+    const downloadPaths: string[] = [];
+    const supabase = {
+      storage: {
+        from: () => ({
+          list: vi.fn(async (_folder: string, options?: { search?: string }) => {
+            const filename = options?.search ?? "";
+            listCalls.push(filename);
+            return {
+              data: [
+                {
+                  id: "object-id",
+                  name: filename,
+                  metadata: {
+                    size: filename === "recent.txt" ? cjkBytes.byteLength : MAX_IMAGE_BYTES + 1,
+                    contentEncoding: "identity",
+                  },
+                },
+              ],
+              error: null,
+            };
+          }),
+          download: vi.fn((path: string) => {
+            downloadPaths.push(path);
+            return {
+              asStream: async () => ({
+                data:
+                  path === "user/recent.txt"
+                    ? textStream(cjkText)
+                    : new ReadableStream<Uint8Array>({
+                        start(controller) {
+                          controller.error(new Error("el PDF histórico no debe descargarse"));
+                        },
+                      }),
+                error: null,
+              }),
+            };
+          }),
+        }),
+      },
+    } as unknown as UserClient;
+    const messages: UIMessage[] = [
+      {
+        id: "old-pdf",
+        role: "assistant",
+        parts: [
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "old.pdf",
+            url: "capri-image://user/old.pdf",
+          },
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "old.png",
+            url: "capri-image://user/old.png",
+          },
+        ],
+      },
+      {
+        id: "current",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            mediaType: "text/plain",
+            filename: "recent.txt",
+            url: "capri-image://user/recent.txt",
+          },
+        ],
+      },
+    ];
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", messages);
+
+    expect(listCalls).toEqual(["recent.txt", "old.pdf", "old.png"]);
+    expect(downloadPaths).toEqual(["user/recent.txt"]);
+    expect(resolved.map((message) => message.id)).toEqual(["current"]);
+    expect(messageCost(resolved[0]!)).toBe(MAX_HISTORY_CHARS);
+  });
+
   it("reserva el aviso completo antes de conservar historial casi lleno y no descarga el adjunto omitido", async () => {
     const listCalls: string[] = [];
     const downloadPaths: string[] = [];
@@ -244,7 +641,7 @@ describe("resolveTrimmedAttachments", () => {
     expect(messageCost(resolved[0]!)).toBeLessThanOrEqual(MAX_HISTORY_CHARS);
   });
 
-  it("no descarga un adjunto con codificación de contenido comprimida", async () => {
+  it("falla cerrado si un adjunto candidato tiene codificación de contenido no admitida", async () => {
     const downloadPaths: string[] = [];
     const supabase = {
       storage: {
@@ -289,7 +686,7 @@ describe("resolveTrimmedAttachments", () => {
     expect(downloadPaths).toEqual([]);
   });
 
-  it("no descarga el adjunto si list no devuelve size fiable", async () => {
+  it("falla cerrado si list no devuelve size fiable para un adjunto candidato", async () => {
     const downloadPaths: string[] = [];
     const supabase = {
       storage: {

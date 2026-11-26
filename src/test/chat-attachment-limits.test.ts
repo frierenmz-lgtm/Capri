@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
 import type { UserClient } from "@/lib/auth-request.server";
-import { validateChatMessageAttachments } from "@/lib/chat-attachment-limits.server";
+import {
+  downloadChatAttachmentBytes,
+  validateChatMessageAttachments,
+} from "@/lib/chat-attachment-limits.server";
 import { MAX_IMAGE_BYTES, MAX_IMAGES } from "@/lib/images";
 import { projectContextParts, resolveTrimmedAttachments } from "@/lib/chat.server";
 
@@ -12,7 +15,18 @@ const filePart = (filename: string) => ({
   url: `capri-image://user/${filename}`,
 });
 
-function storageClient(size: number | undefined) {
+const textStream = (text: string) =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
+
+function storageClient(
+  size: number | undefined,
+  makeStream = () => textStream("contenido de prueba"),
+) {
   const list = vi.fn(async (_folder: string, options?: { search?: string }) => ({
     data:
       size === undefined
@@ -20,9 +34,8 @@ function storageClient(size: number | undefined) {
         : [{ id: "object-id", name: options?.search ?? "file.txt", metadata: { size } }],
     error: null,
   }));
-  const download = vi.fn(async () => ({
-    data: { text: async () => "contenido de prueba" },
-    error: null,
+  const download = vi.fn(() => ({
+    asStream: vi.fn(async () => ({ data: makeStream(), error: null })),
   }));
   const supabase = {
     storage: {
@@ -39,7 +52,7 @@ const userMessage = (parts: UIMessage["parts"]): UIMessage => ({
 });
 
 describe("límites server-side de adjuntos de chat", () => {
-  it("acepta hasta el máximo de archivos por mensaje y el tamaño exacto permitido", async () => {
+  it("acepta hasta el máximo de archivos por mensaje y el tamaño exacto permitido en metadata", async () => {
     const { supabase, list, download } = storageClient(MAX_IMAGE_BYTES);
     const message = userMessage(
       Array.from({ length: MAX_IMAGES }, (_, i) => filePart(`f${i}.txt`)),
@@ -87,16 +100,127 @@ describe("límites server-side de adjuntos de chat", () => {
     expect(download).not.toHaveBeenCalled();
   });
 
-  it("rechaza más de cuatro archivos en un mensaje histórico antes de descargarlos", async () => {
-    const { supabase, download } = storageClient(100);
-    const older = userMessage(
-      Array.from({ length: MAX_IMAGES + 1 }, (_, i) => filePart(`old-${i}.txt`)),
-    );
-    const current = userMessage([{ type: "text", text: "mensaje actual" }]);
+  it("cancela una descarga cuando los bytes reales superan 5 MiB aunque la metadata sea pequeña", async () => {
+    let cancelled = false;
+    let producedBlocks = 0;
+    const oversizedStream = () =>
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            producedBlocks += 1;
+            controller.enqueue(new Uint8Array(producedBlocks === 1 ? MAX_IMAGE_BYTES : 1));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    const { supabase, download } = storageClient(100, oversizedStream);
 
     await expect(
-      resolveTrimmedAttachments(supabase, "user", [older, current]),
-    ).rejects.toMatchObject({ status: 413 });
+      resolveTrimmedAttachments(supabase, "user", [userMessage([filePart("large.txt")])]),
+    ).rejects.toMatchObject({
+      status: 413,
+      message: "Cada archivo debe pesar 5 MB o menos.",
+    });
+
+    expect(download).toHaveBeenCalledOnce();
+    expect(cancelled).toBe(true);
+    expect(producedBlocks).toBe(2);
+  });
+
+  it("acepta una descarga cuyo stream real pesa exactamente 5 MiB", async () => {
+    const { supabase } = storageClient(
+      100,
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(MAX_IMAGE_BYTES));
+            controller.close();
+          },
+        }),
+    );
+
+    await expect(downloadChatAttachmentBytes(supabase, "user/exact.txt")).resolves.toHaveLength(
+      MAX_IMAGE_BYTES,
+    );
+  });
+
+  it("propaga la cancelación del cliente al stream de Storage", async () => {
+    const abortController = new AbortController();
+    let cancelled = false;
+    let resolveFirstPull!: () => void;
+    const firstPull = new Promise<void>((resolve) => {
+      resolveFirstPull = resolve;
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(1));
+        resolveFirstPull();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { supabase } = storageClient(1, () => stream);
+    const download = downloadChatAttachmentBytes(
+      supabase,
+      "user/cancel.txt",
+      abortController.signal,
+    );
+
+    await firstPull;
+    abortController.abort(new DOMException("Client disconnected", "AbortError"));
+
+    await expect(download).rejects.toMatchObject({ name: "AbortError" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("cancela el fetch inicial de Storage si el request se aborta antes de recibir el stream", async () => {
+    const abortController = new AbortController();
+    const download = vi.fn(
+      (_path: string, _options: undefined, parameters?: { signal?: AbortSignal }) => ({
+        asStream: () =>
+          new Promise((_, reject) => {
+            const signal = parameters?.signal;
+            signal?.addEventListener(
+              "abort",
+              () =>
+                reject(signal.reason ?? new DOMException("The request was aborted", "AbortError")),
+              { once: true },
+            );
+          }),
+      }),
+    );
+    const supabase = {
+      storage: { from: () => ({ download }) },
+    } as unknown as UserClient;
+    const pending = downloadChatAttachmentBytes(
+      supabase,
+      "user/pending.txt",
+      abortController.signal,
+    );
+
+    expect(download).toHaveBeenCalledWith("user/pending.txt", undefined, {
+      signal: abortController.signal,
+    });
+    abortController.abort(new DOMException("Client disconnected", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("recorta más de cuatro archivos de un mensaje antiguo antes de descargarlos", async () => {
+    const { supabase, download } = storageClient(3_000);
+    const older = {
+      ...userMessage(Array.from({ length: MAX_IMAGES + 1 }, (_, i) => filePart(`old-${i}.txt`))),
+      id: "old",
+    };
+    const current = userMessage([{ type: "text", text: "mensaje actual" }]);
+
+    const resolved = await resolveTrimmedAttachments(supabase, "user", [older, current]);
+
+    expect(resolved.map((message) => message.id)).toEqual(["current"]);
     expect(download).not.toHaveBeenCalled();
   });
 
@@ -134,9 +258,8 @@ describe("límites server-side de adjuntos de chat", () => {
       ],
       error: null,
     }));
-    const download = vi.fn(async () => ({
-      data: { text: async () => "contenido de prueba" },
-      error: null,
+    const download = vi.fn(() => ({
+      asStream: vi.fn(async () => ({ data: textStream("contenido de prueba"), error: null })),
     }));
     const supabase = {
       storage: { from: () => ({ list, download }) },
